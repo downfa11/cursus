@@ -1,0 +1,23 @@
+version: "3.9"
+services:
+  broker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: go-broker
+    ports:
+      - "9092:9092"
+    volumes:
+      - broker-data:/var/lib/go-broker
+    environment:
+      - CLEANUP_INTERVAL=60
+
+  bench:
+    build:
+      context: .
+      dockerfile: Dockerfile.bench
+    depends_on:
+      - broker
+
+volumes:
+  broker-data:

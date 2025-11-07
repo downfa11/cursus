@@ -1,0 +1,35 @@
+services:
+  broker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: go-broker
+    command: ./cli
+    volumes:
+      - ./logs:/root/broker_logs
+      - ./config.yaml:/root/config.yaml
+    environment:
+      - CONFIG_PATH=/root/config.yaml
+    ports:
+      - "9000:9000"
+      - "9100:9100"
+    stdin_open: true
+    tty: true
+    networks:
+      - broker-net
+
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: prometheus
+  #   volumes:
+  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #   ports:
+  #     - "9090:9090"
+  #   networks:
+  #     - broker-net
+  #   depends_on:
+  #     - broker
+
+networks:
+  broker-net:
+    driver: bridge
