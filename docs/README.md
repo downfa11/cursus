@@ -2,7 +2,7 @@
 
 This directory contains various documents explaining different aspects of the project. Please navigate through the list below to find the information you need.
 
-### 📖 Core Document Index
+## 📖 Core Document Index
 
 | Document | Description | Path |
 | :--- | :--- | :--- |
