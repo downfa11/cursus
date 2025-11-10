@@ -51,13 +51,14 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 		return err
 	}
 
+	log.Printf("🧩 Broker listening on %s (TLS=%v, Gzip=%v)", addr, cfg.UseTLS, cfg.EnableGzip)
+	brokerReady.Store(true)
+
 	healthPort := cfg.HealthCheckPort
 	if healthPort == 0 {
 		healthPort = DefaultHealthCheckPort
 	}
 	startHealthCheckServer(healthPort, tm, brokerReady)
-
-	log.Printf("🧩 Broker listening on %s (TLS=%v, Gzip=%v)", addr, cfg.UseTLS, cfg.EnableGzip)
 
 	workerCh := make(chan net.Conn, maxWorkers)
 	for i := 0; i < maxWorkers; i++ {

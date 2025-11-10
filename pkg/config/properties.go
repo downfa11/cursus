@@ -54,7 +54,7 @@ func LoadConfig() (*Config, error) {
 	flag.BoolVar(&cfg.UseTLS, "tls", false, "Enable TLS")
 	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS certificate path")
 	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
-	flag.BoolVar(&cfg.EnableGzip, "gzip", true, "Enable gzip compression")
+	flag.BoolVar(&cfg.EnableGzip, "gzip", false, "Enable gzip compression")
 
 	configPath := flag.String("config", "", "Path to YAML/JSON config file")
 
