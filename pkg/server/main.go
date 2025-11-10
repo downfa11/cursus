@@ -159,7 +159,9 @@ func startHealthCheckServer(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Printf("⚠️ Health check response write error: %v", err)
+		}
 	})
 
 	addr := fmt.Sprintf(":%d", port)
