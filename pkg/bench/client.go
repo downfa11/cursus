@@ -2,11 +2,12 @@ package bench
 
 import (
 	"fmt"
-	"go-broker/pkg/server"
-	"go-broker/util"
 	"net"
 	"strings"
 	"sync"
+
+	"github.com/downfa11-org/go-broker/pkg/server"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type BenchClient struct {
@@ -32,10 +33,13 @@ func (c *BenchClient) sendCommand(conn net.Conn, topic, payload string) error {
 	_, respPayload := util.DecodeMessage(respBuf)
 	resp := strings.TrimSpace(respPayload)
 
-	if !(strings.Contains(resp, "OK") ||
-		strings.Contains(resp, "Topic") ||
+	upperResp := strings.ToUpper(resp)
+
+	if !(strings.Contains(upperResp, "OK") ||
+		strings.Contains(upperResp, "TOPIC") ||
 		strings.Contains(resp, "✅") ||
-		strings.Contains(strings.ToUpper(resp), "CREATED")) {
+		strings.Contains(upperResp, "CREATED") ||
+		strings.Contains(upperResp, "EXISTS")) {
 		return fmt.Errorf("unexpected response: %s", resp)
 	}
 	return nil

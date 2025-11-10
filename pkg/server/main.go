@@ -4,21 +4,30 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
-	"go-broker/pkg/config"
-	"go-broker/pkg/controller"
-	"go-broker/pkg/disk"
-	"go-broker/pkg/metrics"
-	"go-broker/pkg/topic"
-	"go-broker/pkg/types"
-	"go-broker/util"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/controller"
+	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/metrics"
+	"github.com/downfa11-org/go-broker/pkg/topic"
+	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/go-broker/util"
 )
 
-const maxWorkers = 1000
+const (
+	maxWorkers             = 1000
+	readDeadline           = 5 * time.Minute // Read deadline defined as a constant
+	DefaultHealthCheckPort = 9080
+)
+
+var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
 func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager) error {
@@ -43,6 +52,13 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 	}
 
 	log.Printf("🧩 Broker listening on %s (TLS=%v, Gzip=%v)", addr, cfg.UseTLS, cfg.EnableGzip)
+	brokerReady.Store(true)
+
+	healthPort := cfg.HealthCheckPort
+	if healthPort == 0 {
+		healthPort = DefaultHealthCheckPort
+	}
+	startHealthCheckServer(healthPort, tm, brokerReady)
 
 	workerCh := make(chan net.Conn, maxWorkers)
 	for i := 0; i < maxWorkers; i++ {
@@ -71,7 +87,11 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 	ctx := controller.NewClientContext("tcp-group", 0)
 
 	for {
-		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
+			log.Printf("⚠️ SetReadDeadline error: %v", err)
+			return
+		}
+
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
 			if err != io.EOF {
@@ -131,6 +151,45 @@ func writeResponse(conn net.Conn, msg string) {
 	resp := []byte(msg)
 	respLen := make([]byte, 4)
 	binary.BigEndian.PutUint32(respLen, uint32(len(resp)))
-	conn.Write(respLen)
-	conn.Write(resp)
+
+	if _, err := conn.Write(respLen); err != nil {
+		log.Printf("⚠️ Write length error: %v", err)
+		return
+	}
+	if _, err := conn.Write(resp); err != nil {
+		log.Printf("⚠️ Write response error: %v", err)
+		return
+	}
+}
+
+// startHealthCheckServer starts a simple HTTP server for health checks
+func startHealthCheckServer(port int, tm *topic.TopicManager, brokerReady *atomic.Bool) {
+	mux := http.NewServeMux()
+
+	healthHandler := func(w http.ResponseWriter, r *http.Request) {
+		if !brokerReady.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			if _, err := w.Write([]byte("Broker not ready: Main listener not active")); err != nil {
+				log.Printf("⚠️ Health check response write error: %v", err)
+			}
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Printf("⚠️ Health check response write error: %v", err)
+		}
+	}
+
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/", healthHandler)
+
+	addr := fmt.Sprintf(":%d", port)
+
+	go func() {
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Printf("❌ Health check server failed: %v", err)
+		}
+	}()
+	log.Printf("🩺 Health check endpoint started on port %d", port)
 }
