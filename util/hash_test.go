@@ -48,6 +48,9 @@ func TestPartitionIndex(t *testing.T) {
 
 	for _, key := range keys {
 		index := util.Hash(key) % partitions
+		if index < 0 {
+			t.Errorf("Partition index out of bounds: %v", index)
+		}
 		if index >= partitions {
 			t.Errorf("Partition index out of bounds: %v", index)
 		}
