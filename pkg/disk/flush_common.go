@@ -2,6 +2,7 @@ package disk
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log"
 	"time"
 )
@@ -15,7 +16,7 @@ func (d *DiskHandler) flushLoop() {
 		select {
 		case msg, ok := <-d.writeCh:
 			if !ok {
-				break // Exit to let d.done signal trigger drain
+				continue
 			}
 			batch = append(batch, msg)
 			if len(batch) >= d.batchSize {
@@ -162,19 +163,28 @@ func (d *DiskHandler) WriteDirect(msg string) {
 }
 
 func (d *DiskHandler) rotateSegment() error {
+	var errs []error
 	if d.writer != nil {
 		if err := d.writer.Flush(); err != nil {
 			log.Printf("ERROR: flush failed during segment rotation: %v", err)
+			errs = append(errs, err)
 		}
 	}
 	if d.file != nil {
 		if err := d.file.Close(); err != nil {
 			log.Printf("ERROR: close failed during segment rotation: %v", err)
+			errs = append(errs, err)
 		}
 	}
 	d.CurrentSegment++
 	d.CurrentOffset = 0
-	return d.openSegment()
+	if err := d.openSegment(); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("rotateSegment errors: %v", errs)
+	}
+	return nil
 }
 
 func (d *DiskHandler) Flush() {
