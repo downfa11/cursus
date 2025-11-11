@@ -142,7 +142,10 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		if resp == controller.STREAM_DATA_SIGNAL {
 			streamed, err := cmdHandler.HandleConsumeCommand(conn, cmdStr)
 			if err != nil {
+				errMsg := fmt.Sprintf("ERROR: %v", err)
 				log.Printf("[CONSUME_ERR] Error streaming data for command [%s]: %v", cmdStr, err)
+				writeResponse(conn, errMsg)
+				return
 			}
 			log.Printf("[STREAM] Completed streaming %d messages for command [%s]", streamed, cmdStr)
 			return

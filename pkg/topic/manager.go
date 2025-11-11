@@ -62,7 +62,7 @@ func (tm *TopicManager) CreateTopic(name string, partitionCount int) *Topic {
 		}
 	}
 
-	t := NewTopic(name, partitionCount, tm.hp)
+	t, _ := NewTopic(name, partitionCount, tm.hp)
 	tm.topics[name] = t
 	fmt.Printf("✅ topic '%s' created with %d partitions\n", name, partitionCount)
 	return t

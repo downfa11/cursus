@@ -46,17 +46,20 @@ type DiskAppender interface {
 }
 
 // NewTopic creates a new topic with partitions.
-func NewTopic(name string, partitionCount int, hp HandlerProvider) *Topic {
+func NewTopic(name string, partitionCount int, hp HandlerProvider) (*Topic, error) {
 	partitions := make([]*Partition, partitionCount)
 	for i := 0; i < partitionCount; i++ {
-		dh, _ := hp.GetHandler(name, i)
+		dh, err := hp.GetHandler(name, i)
+		if err != nil {
+			return nil, fmt.Errorf("open handler for %s[%d]: %w", name, i, err)
+		}
 		partitions[i] = NewPartition(i, name, dh)
 	}
 	return &Topic{
 		Name:           name,
 		Partitions:     partitions,
 		consumerGroups: make(map[string]*ConsumerGroup),
-	}
+	}, nil
 }
 
 // NewPartition creates a new partition.
@@ -99,7 +102,11 @@ func (p *Partition) run() {
 func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 	for i := 0; i < extra; i++ {
 		idx := len(t.Partitions)
-		dh, _ := hp.GetHandler(t.Name, idx)
+		dh, err := hp.GetHandler(t.Name, idx)
+		if err != nil {
+			fmt.Printf("❌ failed to attach partition %d for topic '%s': %v\n", idx, t.Name, err)
+			return
+		}
 		newP := NewPartition(idx, t.Name, dh)
 		t.Partitions = append(t.Partitions, newP)
 	}
