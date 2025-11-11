@@ -13,7 +13,10 @@ func (d *DiskHandler) flushLoop() {
 
 	for {
 		select {
-		case msg := <-d.writeCh:
+		case msg, ok := <-d.writeCh:
+			if !ok {
+				break // Exit to let d.done signal trigger drain
+			}
 			batch = append(batch, msg)
 			if len(batch) >= d.batchSize {
 				d.writeBatch(batch)
