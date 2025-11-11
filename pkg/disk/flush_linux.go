@@ -36,7 +36,9 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 	}
 
 	if d.writer != nil {
-		d.writer.Flush()
+		if err := d.writer.Flush(); err != nil {
+			return err
+		}
 	}
 
 	info, err := d.file.Stat()
@@ -50,6 +52,7 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 	if !ok {
 		if _, err := d.file.Seek(0, 0); err != nil {
 			log.Printf("ERROR: Seek failed: %v", err)
+			return err
 		}
 		_, err := io.Copy(conn, d.file)
 		return err

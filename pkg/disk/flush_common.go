@@ -25,6 +25,24 @@ func (d *DiskHandler) flushLoop() {
 				batch = batch[:0]
 			}
 		case <-d.done:
+			draining := true
+			for draining {
+				if len(batch) >= d.batchSize {
+					d.writeBatch(batch)
+					batch = batch[:0]
+					continue
+				}
+				select {
+				case msg, ok := <-d.writeCh:
+					if !ok {
+						draining = false
+						continue
+					}
+					batch = append(batch, msg)
+				default:
+					draining = false
+				}
+			}
 			if len(batch) > 0 {
 				d.writeBatch(batch)
 			}
@@ -78,6 +96,11 @@ func (d *DiskHandler) writeBatch(batch []string) {
 	}
 
 	d.writer.Flush()
+	if d.file != nil {
+		if err := d.file.Sync(); err != nil {
+			log.Printf("ERROR: sync failed after batch: %v", err)
+		}
+	}
 }
 
 func (d *DiskHandler) WriteDirect(msg string) {

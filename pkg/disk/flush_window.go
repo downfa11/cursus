@@ -29,7 +29,9 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 		}
 	}
 	if d.writer != nil {
-		d.writer.Flush()
+		if err := d.writer.Flush(); err != nil {
+			return err
+		}
 	}
 	if _, err := d.file.Seek(0, 0); err != nil {
 		return err

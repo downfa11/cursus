@@ -32,6 +32,9 @@ type DiskHandler struct {
 
 	file   *os.File
 	writer *bufio.Writer
+
+	closeOnce sync.Once
+	shutdown  sync.WaitGroup
 }
 
 func NewDiskHandler(cfg *config.Config, topicName string, partitionID, segmentSize int) (*DiskHandler, error) {
@@ -58,7 +61,12 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID, segmentSi
 		writer:       bufio.NewWriter(file),
 	}
 
-	go dh.flushLoop()
+	dh.shutdown.Add(1)
+	go func() {
+		defer dh.shutdown.Done()
+		dh.flushLoop()
+	}()
+
 	return dh, nil
 }
 
@@ -73,7 +81,12 @@ func (d *DiskHandler) AppendMessage(msg string) {
 
 // ReadMessages reads a batch of messages from the disk log, starting from the given offset.
 func (dh *DiskHandler) ReadMessages(offset, max int) ([]types.Message, error) {
-	filePath := fmt.Sprintf("%s_segment_%d.log", dh.BaseName, dh.CurrentSegment)
+	dh.mu.Lock()
+	segment := dh.CurrentSegment
+	dh.mu.Unlock()
+
+	filePath := fmt.Sprintf("%s_segment_%d.log", dh.BaseName, segment)
+
 	reader, err := mmap.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("mmap open failed: %w", err)
@@ -124,5 +137,9 @@ func (dh *DiskHandler) ReadMessages(offset, max int) ([]types.Message, error) {
 
 // Close signals the flushLoop to terminate and cleans up resources.
 func (d *DiskHandler) Close() {
-	close(d.done)
+	d.closeOnce.Do(func() {
+		close(d.writeCh)
+		close(d.done)
+		d.shutdown.Wait()
+	})
 }
