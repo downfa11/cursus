@@ -80,12 +80,7 @@ func (p *Partition) run() {
 	for msg := range p.ch {
 		p.mu.RLock()
 		for _, subCh := range p.subs {
-			select {
-			case subCh <- msg:
-				// success
-			default:
-				// if channel is fully, throw message.
-			}
+			subCh <- msg
 		}
 		p.mu.RUnlock()
 	}
