@@ -47,7 +47,9 @@ func (d *DiskHandler) flushLoop() {
 				d.writeBatch(batch)
 			}
 			if d.file != nil {
-				d.writer.Flush()
+				if err := d.writer.Flush(); err != nil {
+					log.Printf("ERROR: flush failed in Flush: %v", err)
+				}
 				if err := d.file.Sync(); err != nil {
 					log.Printf("ERROR: Sync failed during shutdown: %v", err)
 				}
@@ -143,7 +145,9 @@ func (d *DiskHandler) WriteDirect(msg string) {
 	}
 
 	d.CurrentOffset += totalLen
-	d.writer.Flush()
+	if err := d.writer.Flush(); err != nil {
+		log.Printf("ERROR: flush failed in Flush: %v", err)
+	}
 
 	if d.file != nil {
 		if err := d.file.Sync(); err != nil {
@@ -188,7 +192,9 @@ perform_write:
 	d.ioMu.Lock()
 	defer d.ioMu.Unlock()
 	if d.writer != nil {
-		d.writer.Flush()
+		if err := d.writer.Flush(); err != nil {
+			log.Printf("ERROR: flush failed in Flush: %v", err)
+		}
 	}
 
 	if d.file != nil {

@@ -150,7 +150,7 @@ func (c *BenchClient) RunMessageProductionPhase(producerID int) error {
 }
 
 // consumeMessagesFromPartition connects and sends a CONSUME command, then reads all expected messages.
-func (c *BenchClient) consumeMessagesFromPartition(cid, count int, wg *sync.WaitGroup) {
+func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	conn, err := net.Dial("tcp", c.Addr)
@@ -160,7 +160,6 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, count int, wg *sync.Wait
 	}
 	defer conn.Close()
 
-	partitionID := cid % c.Partitions
 	startOffset := 0
 
 	consumeCmd := fmt.Sprintf("CONSUME %s %d %d", c.Topic, partitionID, startOffset)
@@ -241,16 +240,20 @@ func (c *BenchClient) RunConsumerPhase(numConsumers int) error {
 	var wg sync.WaitGroup
 
 	total := c.NumMessages
-	msgsPerConsumer := total / numConsumers
-	remainder := total % numConsumers
+	msgsPerConsumer := total / c.Partitions
+	remainder := total % c.Partitions
 
-	for i := 0; i < numConsumers; i++ {
+	for partitionID := 0; partitionID < c.Partitions; partitionID++ {
 		count := msgsPerConsumer
-		if i < remainder {
+		if partitionID < remainder {
 			count++
 		}
+		if count == 0 {
+			continue
+		}
 		wg.Add(1)
-		go c.consumeMessagesFromPartition(i, count, &wg)
+		consumerID := partitionID % numConsumers
+		go c.consumeMessagesFromPartition(consumerID, partitionID, count, &wg)
 	}
 
 	wg.Wait()
