@@ -58,7 +58,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 	if healthPort == 0 {
 		healthPort = DefaultHealthCheckPort
 	}
-	startHealthCheckServer(healthPort, tm, brokerReady)
+	startHealthCheckServer(healthPort, brokerReady)
 
 	workerCh := make(chan net.Conn, maxWorkers)
 	for i := 0; i < maxWorkers; i++ {
@@ -113,27 +113,47 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			return
 		}
 
-		cmdStr := strings.TrimSpace(string(data))
-
-		if isCommand(cmdStr) {
-			resp := cmdHandler.HandleCommand(cmdStr, ctx)
-			writeResponse(conn, resp)
-			continue
-		}
-
 		topicName, payload := util.DecodeMessage(data)
+		clientAddr := conn.RemoteAddr().String()
+
 		if topicName == "" || payload == "" {
+			rawInput := strings.TrimSpace(string(data))
+			log.Printf("[INPUT_WARN] [%s] Received unrecognized input (not cmd/msg format): %s", clientAddr, rawInput)
 			return
 		}
-		tm.Publish(topicName, types.Message{
-			Payload: payload,
-			Key:     payload,
-		})
-		if dh, err := dm.GetHandler(topicName, 0); err == nil {
-			dh.Log("info", fmt.Sprintf("Received message for topic %s: %s", topicName, payload))
+
+		log.Printf("[REQ] [%s] Received request. Topic: '%s', Payload: '%s'", clientAddr, topicName, payload)
+
+		var resp string
+		cmdStr := payload
+
+		if isCommand(payload) {
+			resp = cmdHandler.HandleCommand(payload, ctx)
+		} else {
+			tm.Publish(topicName, types.Message{
+				Payload: payload,
+				Key:     payload,
+			})
+
+			writeResponse(conn, "OK")
+			resp = ""
 		}
 
-		writeResponse(conn, "OK")
+		if resp == controller.STREAM_DATA_SIGNAL {
+			streamed, err := cmdHandler.HandleConsumeCommand(conn, cmdStr)
+			if err != nil {
+				errMsg := fmt.Sprintf("ERROR: %v", err)
+				log.Printf("[CONSUME_ERR] Error streaming data for command [%s]: %v", cmdStr, err)
+				writeResponse(conn, errMsg)
+				return
+			}
+			log.Printf("[STREAM] Completed streaming %d messages for command [%s]", streamed, cmdStr)
+			return
+		}
+
+		if resp != "" {
+			writeResponse(conn, resp)
+		}
 	}
 }
 
@@ -163,7 +183,7 @@ func writeResponse(conn net.Conn, msg string) {
 }
 
 // startHealthCheckServer starts a simple HTTP server for health checks
-func startHealthCheckServer(port int, tm *topic.TopicManager, brokerReady *atomic.Bool) {
+func startHealthCheckServer(port int, brokerReady *atomic.Bool) {
 	mux := http.NewServeMux()
 
 	healthHandler := func(w http.ResponseWriter, r *http.Request) {
