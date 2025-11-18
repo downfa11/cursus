@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
 	"github.com/downfa11-org/go-broker/pkg/types"
@@ -13,13 +14,14 @@ import (
 )
 
 type TopicManager struct {
-	topics     map[string]*Topic
-	dedupMap   sync.Map
-	cleanupInt time.Duration
-	stopCh     chan struct{}
-	hp         HandlerProvider
-	mu         sync.RWMutex
-	cfg        *config.Config
+	topics      map[string]*Topic
+	dedupMap    sync.Map
+	cleanupInt  time.Duration
+	stopCh      chan struct{}
+	hp          HandlerProvider
+	mu          sync.RWMutex
+	cfg         *config.Config
+	coordinator *coordinator.Coordinator
 }
 
 // HandlerProvider defines an interface to provide disk handlers.
@@ -27,18 +29,19 @@ type HandlerProvider interface {
 	GetHandler(topic string, partitionID int) (*disk.DiskHandler, error)
 }
 
-func NewTopicManager(cfg *config.Config, hp HandlerProvider) *TopicManager {
+func NewTopicManager(cfg *config.Config, hp HandlerProvider, cd *coordinator.Coordinator) *TopicManager {
 	cleanupSec := cfg.CleanupInterval
 	if cleanupSec <= 0 {
 		cleanupSec = 60
 	}
 
 	tm := &TopicManager{
-		topics:     make(map[string]*Topic),
-		cleanupInt: time.Duration(cleanupSec) * time.Second,
-		stopCh:     make(chan struct{}),
-		hp:         hp,
-		cfg:        cfg,
+		topics:      make(map[string]*Topic),
+		cleanupInt:  time.Duration(cleanupSec) * time.Second,
+		stopCh:      make(chan struct{}),
+		hp:          hp,
+		cfg:         cfg,
+		coordinator: cd,
 	}
 	go tm.cleanupLoop()
 	return tm

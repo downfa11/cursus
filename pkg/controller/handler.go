@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/offset"
 	"github.com/downfa11-org/go-broker/pkg/topic"
@@ -22,6 +23,7 @@ type CommandHandler struct {
 	DiskManager   *disk.DiskManager
 	Config        *config.Config
 	OffsetManager *offset.OffsetManager
+	Coordinator   *coordinator.Coordinator
 }
 
 type ConsumeArgs struct {
@@ -30,12 +32,13 @@ type ConsumeArgs struct {
 	Offset    int
 }
 
-func NewCommandHandler(tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager) *CommandHandler {
+func NewCommandHandler(tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager, cd *coordinator.Coordinator) *CommandHandler {
 	return &CommandHandler{
 		TopicManager:  tm,
 		DiskManager:   dm,
 		Config:        cfg,
 		OffsetManager: om,
+		Coordinator:   cd,
 	}
 }
 
@@ -267,6 +270,26 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		}
 		ctx.SetConsumerGroup(groupName)
 		resp = fmt.Sprintf("✅ Consumer group set to '%s'", groupName)
+
+	case strings.HasPrefix(strings.ToUpper(cmd), "HEARTBEAT "):
+		args := strings.Fields(cmd[10:])
+		if len(args) < 2 {
+			resp = "ERROR: HEARTBEAT requires <group> <consumer_id>"
+			break
+		}
+		groupName := args[0]
+		consumerID := args[1]
+
+		if ch.Coordinator != nil {
+			err := ch.Coordinator.RecordHeartbeat(groupName, consumerID)
+			if err != nil {
+				resp = fmt.Sprintf("ERROR: %v", err)
+			} else {
+				resp = "OK"
+			}
+		} else {
+			resp = "ERROR: coordinator not available"
+		}
 
 	case strings.EqualFold(cmd, "CONSUME"):
 		var output []string

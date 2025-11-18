@@ -48,6 +48,9 @@ type Config struct {
 	// Consumer-specific
 	AutoOffsetReset      string                `yaml:"auto_offset_reset" json:"auto.offset.reset"` // "earliest" or "latest"
 	StaticConsumerGroups []ConsumerGroupConfig `yaml:"static_consumer_groups" json:"static_consumer_groups"`
+	HeartbeatIntervalMS  int                   `yaml:"heartbeat_interval_ms"`
+	SessionTimeoutMS     int                   `yaml:"session_timeout_ms"`
+	RebalanceTimeoutMS   int                   `yaml:"rebalance_timeout_ms"`
 
 	// DiskHandler tuning
 	DiskFlushBatchSize int `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
@@ -88,6 +91,9 @@ func LoadConfig() (*Config, error) {
 
 	// consumer-specific
 	flag.StringVar(&cfg.AutoOffsetReset, "auto-offset-reset", "latest", "What to do when there is no initial offset (earliest|latest)")
+	flag.IntVar(&cfg.HeartbeatIntervalMS, "heartbeat-interval", 3000, "Heartbeat interval in milliseconds")
+	flag.IntVar(&cfg.SessionTimeoutMS, "session-timeout", 30000, "Session timeout in milliseconds")
+	flag.IntVar(&cfg.RebalanceTimeoutMS, "rebalance-timeout", 60000, "Rebalance timeout in milliseconds")
 
 	// DiskHandler tuning
 	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", 50, "Number of messages per disk flush")

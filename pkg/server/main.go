@@ -14,6 +14,7 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/controller"
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
 	"github.com/downfa11-org/go-broker/pkg/offset"
@@ -31,7 +32,7 @@ const (
 var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
-func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, om *offset.OffsetManager) error {
+func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, om *offset.OffsetManager, cd *coordinator.Coordinator) error {
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
 		log.Printf("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
@@ -65,7 +66,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg, om)
+				HandleConnection(conn, tm, dm, cfg, om, cd)
 			}
 		}()
 	}
@@ -81,10 +82,10 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager) {
+func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager, cd *coordinator.Coordinator) {
 	defer conn.Close()
 
-	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, om)
+	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, om, cd)
 	ctx := controller.NewClientContext("default-group", 0)
 
 	for {
