@@ -38,6 +38,9 @@ type Config struct {
 	BatchSize                  int      `yaml:"batch_size" json:"batch.size"`
 	MaxInflightRequestsPerConn int      `yaml:"max_inflight_requests_per_conn" json:"max.inflight.requests.per.connection"`
 
+	// Consumer-specific
+	AutoOffsetReset string `yaml:"auto_offset_reset" json:"auto.offset.reset"` // "earliest" or "latest"
+
 	// DiskHandler tuning
 	DiskFlushBatchSize int `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
 	LingerMS           int `yaml:"linger_ms" json:"linger.ms"`
@@ -74,6 +77,9 @@ func LoadConfig() (*Config, error) {
 	// broker-specific
 	flag.StringVar(&cfg.Acks, "acks", "0", "ACK level: 0 (no ack), 1 (leader ack), all (all replicas)")
 	flag.IntVar(&cfg.AckTimeoutMS, "ack-timeout-ms", 5000, "ACK timeout in milliseconds")
+
+	// consumer-specific
+	flag.StringVar(&cfg.AutoOffsetReset, "auto-offset-reset", "latest", "What to do when there is no initial offset (earliest|latest)")
 
 	// DiskHandler tuning
 	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", 50, "Number of messages per disk flush")

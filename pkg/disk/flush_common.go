@@ -123,6 +123,7 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		}
 
 		d.CurrentOffset += totalLen
+		d.AbsoluteOffset++
 	}
 
 	if err := d.writer.Flush(); err != nil {
@@ -173,6 +174,8 @@ func (d *DiskHandler) WriteDirect(msg string) {
 	}
 
 	d.CurrentOffset += totalLen
+	d.AbsoluteOffset++
+
 	if err := d.writer.Flush(); err != nil {
 		log.Printf("ERROR: flush failed in Flush: %v", err)
 	}
