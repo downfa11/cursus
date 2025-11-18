@@ -31,7 +31,10 @@ func (dm *DiskManager) GetHandler(topic string, partitionID int) (*DiskHandler, 
 		return dh, nil
 	}
 
-	segmentSize := 1024 * 1024 // 1MB
+	segmentSize := dm.cfg.SegmentSize
+	if segmentSize == 0 {
+		segmentSize = 1024 * 1024 // Default to 1MB if not set
+	}
 
 	if err := os.MkdirAll(dm.cfg.LogDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory %s: %w", dm.cfg.LogDir, err)

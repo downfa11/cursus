@@ -27,6 +27,9 @@ type DiskHandler struct {
 	linger       time.Duration
 	writeTimeout time.Duration
 
+	segmentRollTime  time.Duration
+	segmentCreatedAt time.Time
+
 	mu   sync.Mutex // metadata(offset, segment), file handler(d.file)
 	ioMu sync.Mutex // bufio.Writer, flush
 
@@ -50,15 +53,17 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID, segmentSi
 	}
 
 	dh := &DiskHandler{
-		BaseName:     base,
-		SegmentSize:  segmentSize,
-		writeCh:      make(chan string, cfg.ChannelBufferSize),
-		done:         make(chan struct{}),
-		batchSize:    cfg.DiskFlushBatchSize,
-		linger:       time.Duration(cfg.LingerMS) * time.Millisecond,
-		writeTimeout: time.Duration(cfg.DiskWriteTimeoutMS) * time.Millisecond,
-		file:         file,
-		writer:       bufio.NewWriter(file),
+		BaseName:         base,
+		SegmentSize:      segmentSize,
+		writeCh:          make(chan string, cfg.ChannelBufferSize),
+		done:             make(chan struct{}),
+		batchSize:        cfg.DiskFlushBatchSize,
+		linger:           time.Duration(cfg.LingerMS) * time.Millisecond,
+		writeTimeout:     time.Duration(cfg.DiskWriteTimeoutMS) * time.Millisecond,
+		segmentRollTime:  time.Duration(cfg.SegmentRollTimeMS) * time.Millisecond,
+		segmentCreatedAt: time.Now(),
+		file:             file,
+		writer:           bufio.NewWriter(file),
 	}
 
 	dh.shutdown.Add(1)
@@ -68,6 +73,11 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID, segmentSi
 	}()
 
 	return dh, nil
+}
+
+func (d *DiskHandler) AppendMessageSync(payload string) error {
+	d.WriteDirect(payload)
+	return nil
 }
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.

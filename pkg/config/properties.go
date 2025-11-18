@@ -31,7 +31,8 @@ type Config struct {
 
 	// Broker-specific
 	BootstrapServers           []string `yaml:"bootstrap_servers" json:"bootstrap.servers"`
-	Acks                       string   `yaml:"acks" json:"acks"`
+	Acks                       string   `yaml:"acks" json:"acks"` // "0", "1", "all"
+	AckTimeoutMS               int      `yaml:"ack_timeout_ms" json:"ack_timeout_ms"`
 	MinInsyncReplicas          int      `yaml:"min_insync_replicas" json:"min.insync.replicas"`
 	BufferSize                 int      `yaml:"buffer_size" json:"buffer.size"`
 	BatchSize                  int      `yaml:"batch_size" json:"batch.size"`
@@ -42,6 +43,8 @@ type Config struct {
 	LingerMS           int `yaml:"linger_ms" json:"linger.ms"`
 	ChannelBufferSize  int `yaml:"channel_buffer_size" json:"channel.buffer.size"`
 	DiskWriteTimeoutMS int `yaml:"disk_write_timeout_ms" json:"disk.write.timeout.ms"`
+	SegmentSize        int `yaml:"segment_size" json:"segment.size"`
+	SegmentRollTimeMS  int `yaml:"segment_roll_time_ms" json:"segment.roll.time.ms"`
 
 	// Partition / Topic tuning
 	PartitionChannelBufSize int  `yaml:"partition_channel_buffer_size" json:"partition.channel.buffer.size"`
@@ -62,16 +65,23 @@ func LoadConfig() (*Config, error) {
 
 	flag.IntVar(&cfg.CleanupInterval, "cleanup-interval", 300, "Cleanup interval in seconds")
 
+	// message
 	flag.BoolVar(&cfg.UseTLS, "tls", false, "Enable TLS")
 	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS certificate path")
 	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
 	flag.BoolVar(&cfg.EnableGzip, "gzip", false, "Enable gzip compression")
+
+	// broker-specific
+	flag.StringVar(&cfg.Acks, "acks", "1", "ACK level: 0 (no ack), 1 (leader ack), all (all replicas)")
+	flag.IntVar(&cfg.AckTimeoutMS, "ack-timeout-ms", 5000, "ACK timeout in milliseconds")
 
 	// DiskHandler tuning
 	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", 50, "Number of messages per disk flush")
 	flag.IntVar(&cfg.LingerMS, "linger-ms", 50, "Maximum time to wait before flush (ms)")
 	flag.IntVar(&cfg.ChannelBufferSize, "channel-buffer", 1024, "DiskHandler write channel buffer size")
 	flag.IntVar(&cfg.DiskWriteTimeoutMS, "disk-write-timeout", 5, "Synchronous write timeout if channel is full (ms)")
+	flag.IntVar(&cfg.SegmentSize, "segment-size", 1048576, "Segment file size in bytes (default: 1MB)")
+	flag.IntVar(&cfg.SegmentRollTimeMS, "segment-roll-time-ms", 0, "Time-based segment rotation in milliseconds (0=disabled)")
 
 	// Partition / Topic tuning
 	flag.IntVar(&cfg.PartitionChannelBufSize, "partition-ch-buffer", 10000, "Partition input channel buffer size")
