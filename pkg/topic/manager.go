@@ -19,6 +19,7 @@ type TopicManager struct {
 	stopCh     chan struct{}
 	hp         HandlerProvider
 	mu         sync.RWMutex
+	cfg        *config.Config
 }
 
 // HandlerProvider defines an interface to provide disk handlers.
@@ -37,6 +38,7 @@ func NewTopicManager(cfg *config.Config, hp HandlerProvider) *TopicManager {
 		cleanupInt: time.Duration(cleanupSec) * time.Second,
 		stopCh:     make(chan struct{}),
 		hp:         hp,
+		cfg:        cfg,
 	}
 	go tm.cleanupLoop()
 	return tm
@@ -78,16 +80,23 @@ func (tm *TopicManager) GetTopic(name string) *Topic {
 	return tm.topics[name]
 }
 
-func (tm *TopicManager) Publish(topicName string, msg types.Message) {
+func (tm *TopicManager) Publish(topicName string, msg types.Message) error {
 	msg.ID = util.GenerateID(msg.Payload)
 	now := time.Now()
 	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
-		return
+		return nil
 	}
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
-		return
+		if tm.cfg.AutoCreateTopics {
+			t = tm.CreateTopic(topicName, 4) // auto-create topic (default: 4 partition)
+			if t == nil {
+				return fmt.Errorf("failed to auto-create topic '%s'", topicName)
+			}
+		} else {
+			return fmt.Errorf("topic '%s' does not exist", topicName)
+		}
 	}
 
 	start := time.Now()
@@ -96,6 +105,7 @@ func (tm *TopicManager) Publish(topicName string, msg types.Message) {
 
 	metrics.MessagesProcessed.Inc()
 	metrics.LatencyHist.Observe(elapsed)
+	return nil
 }
 
 func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) *ConsumerGroup {

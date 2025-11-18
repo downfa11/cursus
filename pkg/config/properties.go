@@ -44,8 +44,9 @@ type Config struct {
 	DiskWriteTimeoutMS int `yaml:"disk_write_timeout_ms" json:"disk.write.timeout.ms"`
 
 	// Partition / Topic tuning
-	PartitionChannelBufSize int `yaml:"partition_channel_buffer_size" json:"partition.channel.buffer.size"`
-	ConsumerChannelBufSize  int `yaml:"consumer_channel_buffer_size" json:"consumer.channel.buffer.size"`
+	PartitionChannelBufSize int  `yaml:"partition_channel_buffer_size" json:"partition.channel.buffer.size"`
+	ConsumerChannelBufSize  int  `yaml:"consumer_channel_buffer_size" json:"consumer.channel.buffer.size"`
+	AutoCreateTopics        bool `yaml:"auto_create_topics" json:"auto.create.topics"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -75,6 +76,7 @@ func LoadConfig() (*Config, error) {
 	// Partition / Topic tuning
 	flag.IntVar(&cfg.PartitionChannelBufSize, "partition-ch-buffer", 10000, "Partition input channel buffer size")
 	flag.IntVar(&cfg.ConsumerChannelBufSize, "consumer-ch-buffer", 1000, "Consumer channel buffer size")
+	flag.BoolVar(&cfg.AutoCreateTopics, "auto-create-topics", true, "Auto-create topics on publish")
 
 	configPath := flag.String("config", "", "Path to YAML/JSON config file")
 

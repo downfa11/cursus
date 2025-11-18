@@ -130,10 +130,16 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		if isCommand(payload) {
 			resp = cmdHandler.HandleCommand(payload, ctx)
 		} else {
-			tm.Publish(topicName, types.Message{
+			err := tm.Publish(topicName, types.Message{
 				Payload: payload,
 				Key:     payload,
 			})
+
+			if err != nil {
+				resp = fmt.Sprintf("ERROR: %v", err)
+				writeResponse(conn, resp)
+				continue
+			}
 
 			writeResponse(conn, "OK")
 			resp = ""

@@ -183,7 +183,10 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			Payload: payload,
 			Key:     payload,
 		}
-		tm.Publish(topicName, msg)
+		if err := tm.Publish(topicName, msg); err != nil {
+			resp = fmt.Sprintf("ERROR: %v", err)
+			break
+		}
 		resp = fmt.Sprintf("📤 Published to '%s'", topicName)
 
 	case strings.EqualFold(cmd, "CONSUME"):
