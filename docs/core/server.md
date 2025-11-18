@@ -177,7 +177,7 @@ cmdHandler := controller.NewCommandHandler(tm, dm)
 And a ClientContext:
 
 ```
-ctx := controller.NewClientContext("tcp-group", 0)
+ctx := controller.NewClientContext("default-group", 0)
 ```
 
 The CommandHandler routes commands to appropriate subsystems. See [Command Processing](../reference/api-reference.md) for details.

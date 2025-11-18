@@ -26,6 +26,19 @@ func main() {
 	tm := topic.NewTopicManager(cfg, dm)
 	om := offset.NewOffsetManager()
 
+	// Static consumer groups
+	for _, gcfg := range cfg.StaticConsumerGroups {
+		for _, topicName := range gcfg.Topics {
+			t := tm.GetTopic(topicName)
+			if t == nil && cfg.AutoCreateTopics {
+				t = tm.CreateTopic(topicName, 4)
+			}
+			if t != nil {
+				tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount)
+			}
+		}
+	}
+
 	if err := server.RunServer(cfg, tm, dm, om); err != nil {
 		log.Fatalf("❌ Broker failed: %v", err)
 	}

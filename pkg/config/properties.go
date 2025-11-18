@@ -10,6 +10,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type ConsumerGroupConfig struct {
+	Name            string         `yaml:"name" json:"name"`
+	ConsumerCount   int            `yaml:"consumer_count" json:"consumer_count"`
+	Topics          []string       `yaml:"topics" json:"topics"`
+	TopicPartitions map[string]int `yaml:"topic_partitions" json:"topic_partitions"` // optional
+}
+
 // Config represents the broker configuration including tunable performance options
 type Config struct {
 	// Common
@@ -39,7 +46,8 @@ type Config struct {
 	MaxInflightRequestsPerConn int      `yaml:"max_inflight_requests_per_conn" json:"max.inflight.requests.per.connection"`
 
 	// Consumer-specific
-	AutoOffsetReset string `yaml:"auto_offset_reset" json:"auto.offset.reset"` // "earliest" or "latest"
+	AutoOffsetReset      string                `yaml:"auto_offset_reset" json:"auto.offset.reset"` // "earliest" or "latest"
+	StaticConsumerGroups []ConsumerGroupConfig `yaml:"static_consumer_groups" json:"static_consumer_groups"`
 
 	// DiskHandler tuning
 	DiskFlushBatchSize int `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
