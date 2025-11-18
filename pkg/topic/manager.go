@@ -108,6 +108,57 @@ func (tm *TopicManager) Publish(topicName string, msg types.Message) error {
 	return nil
 }
 
+func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) error {
+	msg.ID = util.GenerateID(msg.Payload)
+	now := time.Now()
+	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
+		return fmt.Errorf("duplicate message: %v", msg.ID)
+	}
+
+	t := tm.GetTopic(topicName)
+	if t == nil {
+		return fmt.Errorf("topic not found: %s", topicName)
+	}
+
+	t.mu.Lock()
+	partitionCount := len(t.Partitions)
+	var idx int
+	if msg.Key != "" {
+		keyID := util.GenerateID(msg.Key)
+		idx = int(keyID % uint64(partitionCount))
+	} else {
+		idx = int(t.counter % uint64(partitionCount))
+		t.counter++
+	}
+	partition := t.Partitions[idx]
+	t.mu.Unlock()
+
+	if !partition.closed {
+		select {
+		case partition.ch <- msg:
+		default:
+			return fmt.Errorf("partition channel full")
+		}
+	}
+
+	if partition.dh != nil {
+		if appender, ok := partition.dh.(DiskAppender); ok {
+			if err := appender.AppendMessageSync(msg.Payload); err != nil {
+				return fmt.Errorf("disk write failed: %w", err)
+			}
+		} else {
+			return fmt.Errorf("disk handler does not implement DiskAppender")
+		}
+	}
+
+	start := time.Now()
+	elapsed := time.Since(start).Seconds()
+	metrics.MessagesProcessed.Inc()
+	metrics.LatencyHist.Observe(elapsed)
+
+	return nil
+}
+
 func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) *ConsumerGroup {
 	t := tm.GetTopic(topicName)
 	if t == nil {

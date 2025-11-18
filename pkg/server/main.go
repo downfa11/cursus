@@ -64,7 +64,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg.EnableGzip)
+				HandleConnection(conn, tm, dm, cfg)
 			}
 		}()
 	}
@@ -80,7 +80,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, enableGzip bool) {
+func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config) {
 	defer conn.Close()
 
 	cmdHandler := controller.NewCommandHandler(tm, dm)
@@ -107,7 +107,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			return
 		}
 
-		data, err := DecompressMessage(msgBuf, enableGzip)
+		data, err := DecompressMessage(msgBuf, cfg.EnableGzip)
 		if err != nil {
 			log.Printf("⚠️ Decompress error: %v", err)
 			return
@@ -130,18 +130,45 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		if isCommand(payload) {
 			resp = cmdHandler.HandleCommand(payload, ctx)
 		} else {
-			err := tm.Publish(topicName, types.Message{
-				Payload: payload,
-				Key:     payload,
-			})
+			switch cfg.Acks {
+			case "0":
+				err := tm.Publish(topicName, types.Message{
+					Payload: payload,
+					Key:     payload,
+				})
 
-			if err != nil {
-				resp = fmt.Sprintf("ERROR: %v", err)
-				writeResponse(conn, resp)
-				continue
+				if err != nil {
+					resp = fmt.Sprintf("ERROR: %v", err)
+					writeResponse(conn, resp)
+					continue
+				}
+
+				writeResponse(conn, "OK")
+
+			case "1":
+				// acks=1
+				err := tm.PublishWithAck(topicName, types.Message{
+					Payload: payload,
+					Key:     payload,
+				})
+
+				if err != nil {
+					errMsg := fmt.Sprintf("ERROR: %v", err)
+					log.Printf("[PUBLISH_ERR] [%s] %s", clientAddr, errMsg)
+					writeResponse(conn, errMsg)
+					continue
+				}
+				writeResponse(conn, "OK")
+
+			case "all":
+				// TODO: acks=all case with MinInsyncReplicas Option
+				writeResponse(conn, "ERROR: acks=all not yet implemented")
+			default:
+				errMsg := fmt.Sprintf("ERROR: invalid acks configuration: %s", cfg.Acks)
+				log.Printf("[CONFIG_ERR] %s", errMsg)
+				writeResponse(conn, errMsg)
+				return
 			}
-
-			writeResponse(conn, "OK")
 			resp = ""
 		}
 

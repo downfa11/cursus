@@ -43,6 +43,7 @@ type ConsumerGroup struct {
 
 type DiskAppender interface {
 	AppendMessage(msg string)
+	AppendMessageSync(msg string) error
 }
 
 // NewTopic creates a new topic with partitions.

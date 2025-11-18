@@ -72,7 +72,7 @@ func LoadConfig() (*Config, error) {
 	flag.BoolVar(&cfg.EnableGzip, "gzip", false, "Enable gzip compression")
 
 	// broker-specific
-	flag.StringVar(&cfg.Acks, "acks", "1", "ACK level: 0 (no ack), 1 (leader ack), all (all replicas)")
+	flag.StringVar(&cfg.Acks, "acks", "0", "ACK level: 0 (no ack), 1 (leader ack), all (all replicas)")
 	flag.IntVar(&cfg.AckTimeoutMS, "ack-timeout-ms", 5000, "ACK timeout in milliseconds")
 
 	// DiskHandler tuning
