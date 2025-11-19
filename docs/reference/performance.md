@@ -6,10 +6,10 @@ This document explains the configurable parameters that control go-broker's perf
 
 The go-broker system exposes several tunable parameters that control the trade-off between throughput, latency, and resource utilization. These parameters primarily affect:
 
-Channel buffer sizes - Control memory usage and backpressure behavior
-Disk batching parameters - Control disk write efficiency and latency
-Linger times - Control maximum latency before forced flush
-Write timeouts - Control blocking behavior when channels are full
+- **Channel buffer sizes** - Control memory usage and backpressure behavior
+- **Disk batching parameters** - Control disk write efficiency and latency
+- **Linger times** - Control maximum latency before forced flush
+- **Write timeouts** - Control blocking behavior when channels are full
 
 All parameters can be configured via YAML/JSON configuration files, environment variables, or command-line flags.
 
