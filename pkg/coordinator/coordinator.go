@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -56,25 +57,6 @@ func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount 
 	return nil
 }
 
-func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	group := c.groups[groupName]
-	if group == nil {
-		return nil, fmt.Errorf("group not found")
-	}
-
-	group.Members[consumerID] = &MemberMetadata{
-		ID:            consumerID,
-		LastHeartbeat: time.Now(),
-	}
-
-	c.rebalanceRange(groupName)
-
-	return group.Members[consumerID].Assignments, nil
-}
-
 func (c *Coordinator) GetAssignments(groupName string) map[string][]int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -91,17 +73,52 @@ func (c *Coordinator) GetAssignments(groupName string) map[string][]int {
 	return result
 }
 
+func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	group := c.groups[groupName]
+	if group == nil {
+		log.Printf("[JOIN_ERROR] ❌ Consumer '%s' failed to join: group '%s' not found", consumerID, groupName)
+		return nil, fmt.Errorf("group not found")
+	}
+
+	log.Printf("[JOIN_START] 🚀 Consumer '%s' joining group '%s' (current members: %d)",
+		consumerID, groupName, len(group.Members))
+
+	group.Members[consumerID] = &MemberMetadata{
+		ID:            consumerID,
+		LastHeartbeat: time.Now(),
+	}
+
+	c.rebalanceRange(groupName)
+
+	assignments := group.Members[consumerID].Assignments
+	log.Printf("[JOIN_SUCCESS] ✅ Consumer '%s' joined group '%s' with %d partitions: %v",
+		consumerID, groupName, len(assignments), assignments)
+
+	return assignments, nil
+}
+
 func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	group := c.groups[groupName]
 	if group == nil {
+		log.Printf("[LEAVE_ERROR] ❌ Consumer '%s' failed to leave: group '%s' not found", consumerID, groupName)
 		return fmt.Errorf("group not found")
 	}
 
+	log.Printf("[LEAVE_START] 👋 Consumer '%s' leaving group '%s' (current members: %d)",
+		consumerID, groupName, len(group.Members))
+
 	delete(group.Members, consumerID)
 	c.rebalanceRange(groupName)
+
+	log.Printf("[LEAVE_SUCCESS] ✅ Consumer '%s' left group '%s'. Remaining members: %d",
+		consumerID, groupName, len(group.Members))
+
 	return nil
 }
 
@@ -111,14 +128,20 @@ func (c *Coordinator) RecordHeartbeat(groupName, consumerID string) error {
 
 	group := c.groups[groupName]
 	if group == nil {
+		log.Printf("[HEARTBEAT_ERROR] ❌ Heartbeat from '%s' failed: group '%s' not found", consumerID, groupName)
 		return fmt.Errorf("group not found")
 	}
 
 	member := group.Members[consumerID]
 	if member == nil {
+		log.Printf("[HEARTBEAT_ERROR] ❌ Heartbeat from '%s' failed: consumer not found in group '%s'", consumerID, groupName)
 		return fmt.Errorf("consumer not found")
 	}
 
+	oldHeartbeat := member.LastHeartbeat
 	member.LastHeartbeat = time.Now()
+
+	log.Printf("[HEARTBEAT_RECEIVED] 💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)",
+		consumerID, groupName, time.Since(oldHeartbeat))
 	return nil
 }
