@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
 	"github.com/downfa11-org/go-broker/pkg/types"
@@ -13,12 +14,14 @@ import (
 )
 
 type TopicManager struct {
-	topics     map[string]*Topic
-	dedupMap   sync.Map
-	cleanupInt time.Duration
-	stopCh     chan struct{}
-	hp         HandlerProvider
-	mu         sync.RWMutex
+	topics      map[string]*Topic
+	dedupMap    sync.Map
+	cleanupInt  time.Duration
+	stopCh      chan struct{}
+	hp          HandlerProvider
+	mu          sync.RWMutex
+	cfg         *config.Config
+	coordinator *coordinator.Coordinator
 }
 
 // HandlerProvider defines an interface to provide disk handlers.
@@ -26,17 +29,19 @@ type HandlerProvider interface {
 	GetHandler(topic string, partitionID int) (*disk.DiskHandler, error)
 }
 
-func NewTopicManager(cfg *config.Config, hp HandlerProvider) *TopicManager {
+func NewTopicManager(cfg *config.Config, hp HandlerProvider, cd *coordinator.Coordinator) *TopicManager {
 	cleanupSec := cfg.CleanupInterval
 	if cleanupSec <= 0 {
 		cleanupSec = 60
 	}
 
 	tm := &TopicManager{
-		topics:     make(map[string]*Topic),
-		cleanupInt: time.Duration(cleanupSec) * time.Second,
-		stopCh:     make(chan struct{}),
-		hp:         hp,
+		topics:      make(map[string]*Topic),
+		cleanupInt:  time.Duration(cleanupSec) * time.Second,
+		stopCh:      make(chan struct{}),
+		hp:          hp,
+		cfg:         cfg,
+		coordinator: cd,
 	}
 	go tm.cleanupLoop()
 	return tm
@@ -78,16 +83,23 @@ func (tm *TopicManager) GetTopic(name string) *Topic {
 	return tm.topics[name]
 }
 
-func (tm *TopicManager) Publish(topicName string, msg types.Message) {
+func (tm *TopicManager) Publish(topicName string, msg types.Message) error {
 	msg.ID = util.GenerateID(msg.Payload)
 	now := time.Now()
 	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
-		return
+		return nil
 	}
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
-		return
+		if tm.cfg.AutoCreateTopics {
+			t = tm.CreateTopic(topicName, 4) // auto-create topic (default: 4 partition)
+			if t == nil {
+				return fmt.Errorf("failed to auto-create topic '%s'", topicName)
+			}
+		} else {
+			return fmt.Errorf("topic '%s' does not exist", topicName)
+		}
 	}
 
 	start := time.Now()
@@ -96,6 +108,58 @@ func (tm *TopicManager) Publish(topicName string, msg types.Message) {
 
 	metrics.MessagesProcessed.Inc()
 	metrics.LatencyHist.Observe(elapsed)
+	return nil
+}
+
+func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) error {
+	msg.ID = util.GenerateID(msg.Payload)
+	now := time.Now()
+	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
+		return fmt.Errorf("duplicate message: %v", msg.ID)
+	}
+
+	t := tm.GetTopic(topicName)
+	if t == nil {
+		return fmt.Errorf("topic not found: %s", topicName)
+	}
+
+	t.mu.Lock()
+	partitionCount := len(t.Partitions)
+	var idx int
+	if msg.Key != "" {
+		keyID := util.GenerateID(msg.Key)
+		idx = int(keyID % uint64(partitionCount))
+	} else {
+		idx = int(t.counter % uint64(partitionCount))
+		t.counter++
+	}
+	partition := t.Partitions[idx]
+	t.mu.Unlock()
+
+	if !partition.closed {
+		select {
+		case partition.ch <- msg:
+		default:
+			return fmt.Errorf("partition channel full")
+		}
+	}
+
+	if partition.dh != nil {
+		if appender, ok := partition.dh.(DiskAppender); ok {
+			if err := appender.AppendMessageSync(msg.Payload); err != nil {
+				return fmt.Errorf("disk write failed: %w", err)
+			}
+		} else {
+			return fmt.Errorf("disk handler does not implement DiskAppender")
+		}
+	}
+
+	start := time.Now()
+	elapsed := time.Since(start).Seconds()
+	metrics.MessagesProcessed.Inc()
+	metrics.LatencyHist.Observe(elapsed)
+
+	return nil
 }
 
 func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) *ConsumerGroup {

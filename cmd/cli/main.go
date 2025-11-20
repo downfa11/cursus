@@ -8,7 +8,9 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/controller"
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/offset"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 )
 
@@ -20,9 +22,11 @@ func main() {
 	}
 
 	dm := disk.NewDiskManager(cfg)
-	tm := topic.NewTopicManager(cfg, dm)
-	ctx := controller.NewClientContext("cli-group", 0)
-	ch := controller.NewCommandHandler(tm, dm)
+	cd := coordinator.NewCoordinator(cfg)
+	tm := topic.NewTopicManager(cfg, dm, cd)
+	ctx := controller.NewClientContext("default-group", 0)
+	om := offset.NewOffsetManager()
+	ch := controller.NewCommandHandler(tm, dm, cfg, om, cd)
 
 	fmt.Println("🔹 Broker ready. Type HELP for commands.")
 

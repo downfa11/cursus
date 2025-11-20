@@ -14,8 +14,10 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/controller"
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
+	"github.com/downfa11-org/go-broker/pkg/offset"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
@@ -30,7 +32,7 @@ const (
 var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
-func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager) error {
+func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, om *offset.OffsetManager, cd *coordinator.Coordinator) error {
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
 		log.Printf("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
@@ -60,11 +62,16 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 	}
 	startHealthCheckServer(healthPort, brokerReady)
 
+	if cd != nil {
+		cd.Start()
+		log.Printf("🔄 Coordinator started with heartbeat monitoring")
+	}
+
 	workerCh := make(chan net.Conn, maxWorkers)
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg.EnableGzip)
+				HandleConnection(conn, tm, dm, cfg, om, cd)
 			}
 		}()
 	}
@@ -80,11 +87,11 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, enableGzip bool) {
+func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager, cd *coordinator.Coordinator) {
 	defer conn.Close()
 
-	cmdHandler := controller.NewCommandHandler(tm, dm)
-	ctx := controller.NewClientContext("tcp-group", 0)
+	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, om, cd)
+	ctx := controller.NewClientContext("default-group", 0)
 
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
@@ -107,7 +114,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			return
 		}
 
-		data, err := DecompressMessage(msgBuf, enableGzip)
+		data, err := DecompressMessage(msgBuf, cfg.EnableGzip)
 		if err != nil {
 			log.Printf("⚠️ Decompress error: %v", err)
 			return
@@ -130,17 +137,50 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		if isCommand(payload) {
 			resp = cmdHandler.HandleCommand(payload, ctx)
 		} else {
-			tm.Publish(topicName, types.Message{
-				Payload: payload,
-				Key:     payload,
-			})
+			switch cfg.Acks {
+			case "0":
+				err := tm.Publish(topicName, types.Message{
+					Payload: payload,
+					Key:     payload,
+				})
 
-			writeResponse(conn, "OK")
+				if err != nil {
+					resp = fmt.Sprintf("ERROR: %v", err)
+					writeResponse(conn, resp)
+					continue
+				}
+
+				writeResponse(conn, "OK")
+
+			case "1":
+				// acks=1
+				err := tm.PublishWithAck(topicName, types.Message{
+					Payload: payload,
+					Key:     payload,
+				})
+
+				if err != nil {
+					errMsg := fmt.Sprintf("ERROR: %v", err)
+					log.Printf("[PUBLISH_ERR] [%s] %s", clientAddr, errMsg)
+					writeResponse(conn, errMsg)
+					continue
+				}
+				writeResponse(conn, "OK")
+
+			case "all":
+				// TODO: acks=all case with MinInsyncReplicas Option
+				writeResponse(conn, "ERROR: acks=all not yet implemented")
+			default:
+				errMsg := fmt.Sprintf("ERROR: invalid acks configuration: %s", cfg.Acks)
+				log.Printf("[CONFIG_ERR] %s", errMsg)
+				writeResponse(conn, errMsg)
+				return
+			}
 			resp = ""
 		}
 
 		if resp == controller.STREAM_DATA_SIGNAL {
-			streamed, err := cmdHandler.HandleConsumeCommand(conn, cmdStr)
+			streamed, err := cmdHandler.HandleConsumeCommand(conn, cmdStr, ctx)
 			if err != nil {
 				errMsg := fmt.Sprintf("ERROR: %v", err)
 				log.Printf("[CONSUME_ERR] Error streaming data for command [%s]: %v", cmdStr, err)
@@ -158,7 +198,8 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 }
 
 func isCommand(s string) bool {
-	keywords := []string{"CREATE", "DELETE", "LIST", "SUBSCRIBE", "PUBLISH", "CONSUME", "HELP"}
+	keywords := []string{"CREATE", "DELETE", "LIST", "SUBSCRIBE", "PUBLISH", "CONSUME", "HELP",
+		"SETGROUP", "HEARTBEAT", "JOIN_GROUP", "LEAVE_GROUP", "COMMIT_OFFSET", "REGISTER_GROUP"}
 	for _, k := range keywords {
 		if strings.HasPrefix(strings.ToUpper(s), k) {
 			return true

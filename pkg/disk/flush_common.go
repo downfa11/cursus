@@ -12,6 +12,12 @@ func (d *DiskHandler) flushLoop() {
 	ticker := time.NewTicker(d.linger)
 	defer ticker.Stop()
 
+	var segmentTicker *time.Ticker
+	if d.segmentRollTime > 0 {
+		segmentTicker = time.NewTicker(d.segmentRollTime)
+		defer segmentTicker.Stop()
+	}
+
 	for {
 		select {
 		case msg, ok := <-d.writeCh:
@@ -28,6 +34,22 @@ func (d *DiskHandler) flushLoop() {
 				d.writeBatch(batch)
 				batch = batch[:0]
 			}
+		case <-func() <-chan time.Time {
+			if segmentTicker != nil {
+				return segmentTicker.C
+			}
+			return nil
+		}():
+			// Time-based segment rotation
+			d.mu.Lock()
+			d.ioMu.Lock()
+			if time.Since(d.segmentCreatedAt) >= d.segmentRollTime {
+				if err := d.rotateSegment(); err != nil {
+					log.Printf("ERROR: time-based segment rotation failed: %v", err)
+				}
+			}
+			d.ioMu.Unlock()
+			d.mu.Unlock()
 		case <-d.done:
 			draining := true
 			for draining {
@@ -101,6 +123,7 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		}
 
 		d.CurrentOffset += totalLen
+		d.AbsoluteOffset++
 	}
 
 	if err := d.writer.Flush(); err != nil {
@@ -151,6 +174,8 @@ func (d *DiskHandler) WriteDirect(msg string) {
 	}
 
 	d.CurrentOffset += totalLen
+	d.AbsoluteOffset++
+
 	if err := d.writer.Flush(); err != nil {
 		log.Printf("ERROR: flush failed in Flush: %v", err)
 	}
@@ -178,6 +203,7 @@ func (d *DiskHandler) rotateSegment() error {
 	}
 	d.CurrentSegment++
 	d.CurrentOffset = 0
+	d.segmentCreatedAt = time.Now()
 	if err := d.openSegment(); err != nil {
 		errs = append(errs, err)
 	}
