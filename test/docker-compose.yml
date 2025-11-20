@@ -1,23 +1,66 @@
-version: "3.9"
-services:
-  broker:
-    build:
-      context: .
+version: "3.9"  
+services:  
+  broker:    
+    build:    
+      context: ..    
       dockerfile: Dockerfile
-    container_name: go-broker
-    ports:
-      - "9092:9092"
-    volumes:
-      - broker-data:/var/lib/go-broker
-    environment:
-      - CLEANUP_INTERVAL=60
-
-  bench:
-    build:
-      context: .
-      dockerfile: Dockerfile.bench
-    depends_on:
-      - broker
-
-volumes:
+    container_name: broker    
+    command: ./cli    
+    volumes:    
+      - ./logs:/root/broker-logs    
+      - ./config.yaml:/root/config.yaml    
+    environment:    
+      - CONFIG_PATH=/root/config.yaml    
+    ports:    
+      - "9000:9000"    
+      - "9100:9100"    
+      - "9080:9080"    
+    stdin_open: true    
+    tty: true    
+    networks:    
+      - test_network  
+    healthcheck:    
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]    
+      interval: 10s    
+      timeout: 5s    
+      retries: 5    
+    
+  publisher:    
+    build:    
+      context: ./publisher    
+      dockerfile: Dockerfile    
+    container_name: broker-publisher    
+    depends_on:    
+      broker:    
+        condition: service_healthy    
+    volumes:    
+      - ./publisher/publisher-config.yaml:/config.yaml    
+    environment:    
+      - BROKER_ADDR=broker:9000    
+    command: ["./publisher", "-config", "/config.yaml"]    
+    networks:    
+      - test_network  
+    
+  consumer:    
+    build:    
+      context: ./consumer    
+      dockerfile: Dockerfile    
+    container_name: broker-consumer    
+    depends_on:    
+      broker:    
+        condition: service_healthy    
+    volumes:    
+      - ./consumer/consumer-config.yaml:/config.yaml    
+    environment:    
+      - BROKER_ADDR=broker:9000    
+    command: ["./consumer", "-config", "/config.yaml"]    
+    networks:    
+      - test_network  
+  
+networks:  
+  test_network:  
+    name: test_network
+    driver: bridge  
+  
+volumes:  
   broker-data:
