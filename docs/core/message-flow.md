@@ -413,7 +413,7 @@ This limit prevents unbounded memory usage when reading large segments. Clients 
 
 ### Length-Prefixed Framing
 
-After reading messages from disk, HandleConsumeCommand streams them back to the client using length-prefixed framing:
+After reading messages from disk,   `HandleConsumeCommand` streams them back to the client using length-prefixed framing:
 
 ```
 for _, msg := range messages {
