@@ -6,8 +6,8 @@ GO := go
 GOLINT := golangci-lint  
 TEST_FLAGS := -v -race -cover  
 BUILD_FLAGS := -ldflags="-s -w"  
-E2E_COMPOSE_FILE := test/docker-compose.yaml  
-  
+E2E_COMPOSE_FILE := test/docker-compose.yml  
+
 .PHONY: all  
 all: build  
   
@@ -34,13 +34,13 @@ e2e-verbose: e2e-build
 .PHONY: e2e-build  
 e2e-build:  
 	@echo "[MAKE] Building E2E test images..."  
-	docker-compose -f $(E2E_COMPOSE_FILE) build  
+	docker compose -f $(E2E_COMPOSE_FILE) build  # docker-compose → docker compose  
   
 .PHONY: e2e-clean  
 e2e-clean:  
 	@echo "[MAKE] Cleaning E2E test environment..."  
-	docker-compose -f $(E2E_COMPOSE_FILE) down -v  
-	rm -rf test/logs/*  
+	docker compose -f $(E2E_COMPOSE_FILE) down -v  # docker-compose → docker compose  
+	rm -rf test/logs/*   
   
 .PHONY: e2e-logs  
 e2e-logs:  
@@ -105,13 +105,13 @@ docker:
 .PHONY: compose-up  
 compose-up:  
 	@echo "[MAKE] Starting docker-compose..."  
-	docker-compose -f manifests/docker-compose.yaml up -d  
+	docker compose -f manifests/docker-compose.yaml up -d
   
 .PHONY: compose-down  
 compose-down:  
 	@echo "[MAKE] Stopping docker-compose..."  
-	docker-compose -f manifests/docker-compose.yaml down  
-  
+	docker compose -f manifests/docker-compose.yaml down  
+
 .PHONY: tools  
 tools:  
 	@echo "[MAKE] Installing/updating tools..."  
