@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// monitorHeartbeats checks consumer heartbeat intervals and triggers rebalancing when timeouts occur.
 func (c *Coordinator) monitorHeartbeats() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -37,6 +38,7 @@ func (c *Coordinator) monitorHeartbeats() {
 	}
 }
 
+// triggerRebalance invokes the range-based rebalance strategy.
 func (c *Coordinator) triggerRebalance(groupName string) {
 	c.rebalanceRange(groupName)
 }

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/types"
-
 	"github.com/downfa11-org/go-broker/util"
 )
 
@@ -50,7 +49,7 @@ type Consumer struct {
 	stopCh             chan struct{}
 }
 
-// ConsumerGroup is a set of consumers subscribed to the same topic.
+// ConsumerGroup contains consumers subscribed to the same topic.
 type ConsumerGroup struct {
 	Name      string
 	Consumers []*Consumer
@@ -58,7 +57,7 @@ type ConsumerGroup struct {
 
 type Coordinator interface {
 	RegisterGroup(topicName, groupName string, partitionCount int) error
-	AddConsumer(groupName, consumerID string) ([]int, error) // return allocated partitions
+	AddConsumer(groupName, consumerID string) ([]int, error)
 	RemoveConsumer(groupName, consumerID string) error
 	GetAssignments(groupName string) map[string][]int
 }
@@ -68,7 +67,7 @@ type DiskAppender interface {
 	AppendMessageSync(msg string) error
 }
 
-// NewTopic creates a new topic with partitions.
+// NewTopic initializes a topic with partitions.
 func NewTopic(name string, partitionCount int, hp HandlerProvider) (*Topic, error) {
 	partitions := make([]*Partition, partitionCount)
 	for i := 0; i < partitionCount; i++ {
@@ -85,7 +84,7 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider) (*Topic, erro
 	}, nil
 }
 
-// NewPartition creates a new partition.
+// NewPartition creates a partition instance.
 func NewPartition(id int, topic string, dh interface{}) *Partition {
 	p := &Partition{
 		id:    id,
@@ -99,6 +98,7 @@ func NewPartition(id int, topic string, dh interface{}) *Partition {
 	return p
 }
 
+// run dispatches messages to subscribers.
 func (p *Partition) run() {
 	for msg := range p.ch {
 		p.mu.RLock()
@@ -116,7 +116,7 @@ func (p *Partition) run() {
 	p.mu.Unlock()
 }
 
-// AddPartitions adds extra partitions to the topic.
+// AddPartitions extends the topic with new partitions.
 func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 	for i := 0; i < extra; i++ {
 		idx := len(t.Partitions)
@@ -130,7 +130,7 @@ func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 	}
 }
 
-// RegisterConsumerGroup binds all partitions of a topic to a consumer group.
+// RegisterConsumerGroup registers a consumer group to the topic.
 func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *ConsumerGroup {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -184,7 +184,6 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 		assignments := t.coordinator.GetAssignments(groupName)
 		t.applyAssignments(groupName, assignments)
 	} else {
-		// fallback
 		for pid, p := range t.Partitions {
 			groupCh := p.RegisterGroup(groupName)
 			if groupCh == nil {
@@ -205,7 +204,7 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 	return group
 }
 
-// Publish selects a partition and enqueues the message.
+// Publish sends a message to one partition.
 func (t *Topic) Publish(msg types.Message) {
 	var idx int
 	t.mu.Lock()
@@ -222,7 +221,7 @@ func (t *Topic) Publish(msg types.Message) {
 	p.Enqueue(msg)
 }
 
-// Consume returns a consumer channel.
+// Consume retrieves a consumer's channel.
 func (t *Topic) Consume(groupName string, consumerIdx int) <-chan types.Message {
 	t.mu.RLock()
 	group, ok := t.consumerGroups[groupName]
@@ -233,7 +232,7 @@ func (t *Topic) Consume(groupName string, consumerIdx int) <-chan types.Message 
 	return group.Consumers[consumerIdx].MsgCh
 }
 
-// Partition methods
+// Enqueue pushes a message into the partition queue.
 func (p *Partition) Enqueue(msg types.Message) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -249,6 +248,7 @@ func (p *Partition) Enqueue(msg types.Message) {
 	}
 }
 
+// RegisterGroup registers a consumer group to a partition.
 func (p *Partition) RegisterGroup(groupName string) chan types.Message {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -263,6 +263,7 @@ func (p *Partition) RegisterGroup(groupName string) chan types.Message {
 	return ch
 }
 
+// applyAssignments connects partitions to consumers according to coordinator results.
 func (t *Topic) applyAssignments(groupName string, assignments map[string][]int) {
 	group := t.consumerGroups[groupName]
 	if group == nil {
@@ -311,6 +312,7 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 	}
 }
 
+// Close shuts down the partition.
 func (p *Partition) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

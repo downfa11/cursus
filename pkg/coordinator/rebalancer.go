@@ -5,6 +5,7 @@ import (
 	"sort"
 )
 
+// rebalanceRange redistributes partitions among consumers using range-based assignment.
 func (c *Coordinator) rebalanceRange(groupName string) {
 	group := c.groups[groupName]
 	if group == nil {
