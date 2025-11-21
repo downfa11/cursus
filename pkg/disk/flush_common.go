@@ -260,3 +260,17 @@ perform_write:
 		}
 	}
 }
+
+// GetAbsoluteOffset returns the current absolute offset in a thread-safe manner
+func (d *DiskHandler) GetAbsoluteOffset() int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.AbsoluteOffset
+}
+
+// GetCurrentSegment returns the current segment number in a thread-safe manner
+func (d *DiskHandler) GetCurrentSegment() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.CurrentSegment
+}

@@ -62,7 +62,7 @@ func TestWriteBatchRotation(t *testing.T) {
 	dh.WriteDirect(string(msg))
 	dh.WriteDirect(string(msg))
 
-	if dh.CurrentSegment != 1 {
+	if dh.GetCurrentSegment() != 1 {
 		t.Fatalf("expected CurrentSegment 1 after rotation, got %d", dh.CurrentSegment)
 	}
 }
@@ -78,7 +78,7 @@ func TestFlushLoopAsync(t *testing.T) {
 	t.Logf("waiting for flushLoop to process messages...")
 	<-time.After(200 * time.Millisecond)
 
-	if dh.AbsoluteOffset != 3 {
-		t.Fatalf("expected AbsoluteOffset 3 after async flush, got %d", dh.AbsoluteOffset)
+	if dh.GetAbsoluteOffset() != 3 {
+		t.Fatalf("expected AbsoluteOffset 3 after async flush, got %d", dh.GetAbsoluteOffset())
 	}
 }
