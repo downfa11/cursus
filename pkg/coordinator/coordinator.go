@@ -9,26 +9,30 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/config"
 )
 
+// Coordinator manages consumer groups, membership, heartbeats, and partition assignment.
 type Coordinator struct {
-	groups map[string]*GroupMetadata
-	mu     sync.RWMutex
-	cfg    *config.Config
+	groups map[string]*GroupMetadata // All consumer groups
+	mu     sync.RWMutex              // Global lock for coordinator state
+	cfg    *config.Config            // Configuration reference
 }
 
+// GroupMetadata holds metadata for a single consumer group.
 type GroupMetadata struct {
-	TopicName     string
-	Members       map[string]*MemberMetadata
-	Generation    int
-	Partitions    []int
-	LastRebalance time.Time
+	TopicName     string                     // Topic this group consumes
+	Members       map[string]*MemberMetadata // Active members
+	Generation    int                        // Current generation (unused but reserved)
+	Partitions    []int                      // All partitions of the topic
+	LastRebalance time.Time                  // Timestamp of last rebalance
 }
 
+// MemberMetadata holds state for a single consumer instance.
 type MemberMetadata struct {
-	ID            string
-	LastHeartbeat time.Time
-	Assignments   []int
+	ID            string    // Unique consumer ID
+	LastHeartbeat time.Time // Last heartbeat timestamp
+	Assignments   []int     // Partition assignments for this member
 }
 
+// NewCoordinator creates a new Coordinator instance.
 func NewCoordinator(cfg *config.Config) *Coordinator {
 	return &Coordinator{
 		groups: make(map[string]*GroupMetadata),
@@ -36,13 +40,19 @@ func NewCoordinator(cfg *config.Config) *Coordinator {
 	}
 }
 
+// Start launches background monitoring processes (e.g., heartbeat monitor).
 func (c *Coordinator) Start() {
 	go c.monitorHeartbeats()
 }
 
+// RegisterGroup creates a new consumer group for a topic.
 func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if _, exists := c.groups[groupName]; exists {
+		return fmt.Errorf("group '%s' already exists", groupName)
+	}
 
 	partitions := make([]int, partitionCount)
 	for i := 0; i < partitionCount; i++ {
@@ -54,32 +64,37 @@ func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount 
 		Members:    make(map[string]*MemberMetadata),
 		Partitions: partitions,
 	}
+
 	return nil
 }
 
+// GetAssignments returns the current partition assignments for each group member.
 func (c *Coordinator) GetAssignments(groupName string) map[string][]int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	group := c.groups[groupName]
 	if group == nil {
-		return nil
+		return map[string][]int{}
 	}
 
 	result := make(map[string][]int)
 	for id, member := range group.Members {
-		result[id] = member.Assignments
+		cp := append([]int(nil), member.Assignments...)
+		result[id] = cp
 	}
 	return result
 }
 
+// AddConsumer registers a new consumer in the group and triggers a rebalance.
 func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	group := c.groups[groupName]
 	if group == nil {
-		log.Printf("[JOIN_ERROR] ❌ Consumer '%s' failed to join: group '%s' not found", consumerID, groupName)
+		log.Printf("[JOIN_ERROR] ❌ Consumer '%s' failed to join: group '%s' not found",
+			consumerID, groupName)
 		return nil, fmt.Errorf("group not found")
 	}
 
@@ -89,20 +104,24 @@ func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
 	group.Members[consumerID] = &MemberMetadata{
 		ID:            consumerID,
 		LastHeartbeat: time.Now(),
-		Assignments:   nil,
 	}
 
+	c.rebalanceRange(groupName)
+	assignments := group.Members[consumerID].Assignments
+
 	log.Printf("[JOIN_SUCCESS] ✅ Consumer '%s' joined group '%s'", consumerID, groupName)
-	return nil, nil
+	return assignments, nil
 }
 
+// RemoveConsumer unregisters a consumer and triggers a rebalance.
 func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	group := c.groups[groupName]
 	if group == nil {
-		log.Printf("[LEAVE_ERROR] ❌ Consumer '%s' failed to leave: group '%s' not found", consumerID, groupName)
+		log.Printf("[LEAVE_ERROR] ❌ Consumer '%s' failed to leave: group '%s' not found",
+			consumerID, groupName)
 		return fmt.Errorf("group not found")
 	}
 
@@ -110,6 +129,7 @@ func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
 		consumerID, groupName, len(group.Members))
 
 	delete(group.Members, consumerID)
+	c.rebalanceRange(groupName)
 
 	log.Printf("[LEAVE_SUCCESS] ✅ Consumer '%s' left group '%s'. Remaining members: %d",
 		consumerID, groupName, len(group.Members))
@@ -117,32 +137,39 @@ func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
 	return nil
 }
 
+// Rebalance forces a rebalance for a consumer group.
 func (c *Coordinator) Rebalance(groupName string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rebalanceRange(groupName)
 }
 
+// RecordHeartbeat updates the consumer's last heartbeat timestamp.
 func (c *Coordinator) RecordHeartbeat(groupName, consumerID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	group := c.groups[groupName]
 	if group == nil {
-		log.Printf("[HEARTBEAT_ERROR] ❌ Heartbeat from '%s' failed: group '%s' not found", consumerID, groupName)
+		log.Printf("[HEARTBEAT_ERROR] ❌ Heartbeat from '%s' failed: group '%s' not found",
+			consumerID, groupName)
 		return fmt.Errorf("group not found")
 	}
 
 	member := group.Members[consumerID]
 	if member == nil {
-		log.Printf("[HEARTBEAT_ERROR] ❌ Heartbeat from '%s' failed: consumer not found in group '%s'", consumerID, groupName)
+		log.Printf(
+			"[HEARTBEAT_ERROR] ❌ Heartbeat from '%s' failed: consumer not found in group '%s'",
+			consumerID, groupName,
+		)
 		return fmt.Errorf("consumer not found")
 	}
 
-	oldHeartbeat := member.LastHeartbeat
+	old := member.LastHeartbeat
 	member.LastHeartbeat = time.Now()
 
 	log.Printf("[HEARTBEAT_RECEIVED] 💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)",
-		consumerID, groupName, time.Since(oldHeartbeat))
+		consumerID, groupName, time.Since(old))
+
 	return nil
 }
