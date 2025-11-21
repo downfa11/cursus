@@ -277,7 +277,7 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 	}
 	defer conn.Close()
 
-	consumeCmd := fmt.Sprintf("CONSUME %s %d -1", c.config.Topic, partition)
+	consumeCmd := fmt.Sprintf("CONSUME %s %d %d", c.config.Topic, partition, offset)
 	cmdBytes := EncodeMessage(c.config.Topic, consumeCmd)
 
 	if err := WriteWithLength(conn, cmdBytes); err != nil {

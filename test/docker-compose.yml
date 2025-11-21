@@ -34,7 +34,7 @@ services:
       broker:    
         condition: service_healthy    
     volumes:    
-      - ./publisher/publisher-config.yaml:/config.yaml    
+      - ./publisher/config.yaml:/config.yaml    
     environment:    
       - BROKER_ADDR=broker:9000    
     command: ["./publisher", "-config", "/config.yaml"]    
@@ -50,7 +50,7 @@ services:
       broker:    
         condition: service_healthy    
     volumes:    
-      - ./consumer/consumer-config.yaml:/config.yaml    
+      - ./consumer/config.yaml:/config.yaml    
     environment:    
       - BROKER_ADDR=broker:9000    
     command: ["./consumer", "-config", "/config.yaml"]    
