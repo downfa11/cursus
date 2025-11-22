@@ -152,10 +152,17 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 
 // resolveAutoOffset applies the auto.offset.reset policy to determine the starting offset
 func (ch *CommandHandler) resolveAutoOffset(dh *disk.DiskHandler, groupName string) (int, error) {
-	if ch.Config.AutoOffsetReset == "earliest" {
+	if ch.Config != nil && ch.Config.AutoOffsetReset == "earliest" {
 		log.Printf("[OFFSET] Using 'earliest' (0) for group '%s'", groupName)
 		return 0, nil
 	}
+	if ch.Config == nil {
+		log.Printf("[WARN] Config is nil, defaulting auto.offset.reset to 'latest' for group '%s'", groupName)
+	} else if ch.Config.AutoOffsetReset != "latest" {
+		log.Printf("[WARN] Unknown auto.offset.reset '%s', defaulting to 'latest' for group '%s'",
+			ch.Config.AutoOffsetReset, groupName)
+	}
+
 	// "latest"
 	latestOffset, err := dh.GetLatestOffset()
 	if err != nil {

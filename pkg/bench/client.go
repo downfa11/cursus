@@ -64,6 +64,9 @@ func (c *BenchClient) sendCommand(conn net.Conn, topic, payload string) error {
 	}
 
 	resp := strings.TrimSpace(string(respBuf))
+	if resp == "" {
+		return fmt.Errorf("empty response from broker")
+	}
 
 	if strings.HasPrefix(resp, "ERROR:") {
 		return fmt.Errorf("broker error: %s", resp)

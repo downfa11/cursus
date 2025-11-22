@@ -40,8 +40,8 @@ func TestWriteDirectAndFlush(t *testing.T) {
 
 	dh.Flush()
 
-	if dh.AbsoluteOffset != 3 {
-		t.Fatalf("expected AbsoluteOffset 3, got %d", dh.AbsoluteOffset)
+	if dh.GetAbsoluteOffset() != 3 {
+		t.Fatalf("expected AbsoluteOffset 3, got %d", dh.GetAbsoluteOffset())
 	}
 
 	filePath := filepath.Join(dh.BaseName + "_segment_0.log")

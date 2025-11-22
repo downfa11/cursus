@@ -19,8 +19,8 @@ func TestNormalizeDefaults(t *testing.T) {
 	if cfg.SegmentSize != 1<<20 {
 		t.Errorf("SegmentSize default incorrect: %d", cfg.SegmentSize)
 	}
-	if len(cfg.BootstrapServers) == 0 {
-		t.Errorf("BootstrapServers should fallback to default")
+	if len(cfg.BootstrapServers) != 1 || cfg.BootstrapServers[0] != "localhost:9000" {
+		t.Errorf("BootstrapServers default incorrect: %v", cfg.BootstrapServers)
 	}
 }
 

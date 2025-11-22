@@ -21,21 +21,36 @@ test:
 	@echo "[MAKE] Running unit tests..."  
 	$(GO) test $(TEST_FLAGS) $(shell go list ./... | grep -v /test/e2e)
 
-.PHONY: e2e  
-e2e: e2e-build  
-	@echo "[MAKE] Running E2E tests..."  
-	$(GO) test -v -timeout 10m ./test/e2e/...  
+.PHONY: e2e    
+e2e: e2e-build e2e-up  
+	@echo "[MAKE] Running E2E tests..."    
+	$(GO) test -v -timeout 10m ./test/e2e/... || (make e2e-logs && make e2e-clean && exit 1)  
+	@make e2e-clean  
   
+.PHONY: e2e-up    
+e2e-up:    
+	@echo "[MAKE] Starting E2E test containers..."    
+	docker compose -f $(E2E_COMPOSE_FILE) up -d    
+	@echo "[MAKE] Waiting for broker health check..."    
+	@for i in $$(seq 1 30); do \  
+		if curl -f http://localhost:9080/health 2>/dev/null; then \  
+			echo "Broker is healthy"; \  
+			exit 0; \  
+		fi; \  
+		sleep 2; \  
+	done; \  
+	echo "Broker failed to start" && make e2e-logs && exit 1
+
 .PHONY: e2e-verbose  
 e2e-verbose: e2e-build  
 	@echo "[MAKE] Running E2E tests (verbose)..."  
-	$(GO) test -v -race -timeout 10m ./test/e2e/...  
-  
-.PHONY: e2e-build  
-e2e-build:  
-	@echo "[MAKE] Building E2E test images..."  
-	docker compose -f $(E2E_COMPOSE_FILE) build  # docker-compose → docker compose  
-  
+	$(GO) test -v -race -timeout 10m ./test/e2e/...   
+
+.PHONY: e2e-build    
+e2e-build:    
+	@echo "[MAKE] Building E2E test images..."    
+	docker compose -f $(E2E_COMPOSE_FILE) build
+
 .PHONY: e2e-clean  
 e2e-clean:  
 	@echo "[MAKE] Cleaning E2E test environment..."  

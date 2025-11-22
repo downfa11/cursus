@@ -5,7 +5,7 @@ services:
       context: ..    
       dockerfile: Dockerfile
     container_name: broker    
-    command: ./cli    
+    command: ./broker    
     volumes:    
       - ./logs:/root/broker-logs    
       - ./config.yaml:/root/config.yaml    

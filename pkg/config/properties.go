@@ -136,21 +136,7 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	// bootstrap string split
-	if len(cfg.BootstrapServers) == 1 && strings.Contains(cfg.BootstrapServers[0], ",") {
-		cfg.BootstrapServers = strings.Split(cfg.BootstrapServers[0], ",")
-	}
-
-	if cfg.UseTLS && cfg.TLSCertPath != "" && cfg.TLSKeyPath != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
-		if err == nil {
-
-			cfg.TLSCert = cert
-		}
-	}
-
 	cfg.Normalize()
-
 	return cfg, nil
 }
 
@@ -192,6 +178,10 @@ func (cfg *Config) Normalize() {
 	}
 	if cfg.SessionTimeoutMS <= 0 {
 		cfg.SessionTimeoutMS = 30000
+	}
+	// Ensure session timeout is greater than heartbeat interval
+	if cfg.SessionTimeoutMS <= cfg.HeartbeatIntervalMS {
+		cfg.SessionTimeoutMS = cfg.HeartbeatIntervalMS * 10
 	}
 	if cfg.RebalanceTimeoutMS <= 0 {
 		cfg.RebalanceTimeoutMS = 60000
@@ -265,12 +255,15 @@ func (cfg *Config) Normalize() {
 			cfg.UseTLS = false
 			return
 		}
-		if _, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+		if err != nil {
 			cfg.UseTLS = false
+		} else {
+			cfg.TLSCert = cert
 		}
 	}
 
 	if cfg.HeartbeatIntervalMS > int(time.Minute.Milliseconds()) {
-		cfg.HeartbeatIntervalMS = 3000
+		cfg.HeartbeatIntervalMS = int(time.Minute.Milliseconds())
 	}
 }

@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"encoding/binary"
 	"testing"
 )
 
@@ -43,19 +44,14 @@ func (p *Publisher) PublishMessage(msg string) error {
 }
 
 func EncodeMessage(topic, payload string) []byte {
-	// Use length-prefix encoding: [topic-length][topic][payload]
 	topicBytes := []byte(topic)
 	payloadBytes := []byte(payload)
-	result := make([]byte, 4+len(topicBytes)+len(payloadBytes))
 
-	result[0] = byte(len(topicBytes) >> 24)
-	result[1] = byte(len(topicBytes) >> 16)
-	result[2] = byte(len(topicBytes) >> 8)
-	result[3] = byte(len(topicBytes))
-
-	copy(result[4:], topicBytes)
-	copy(result[4+len(topicBytes):], payloadBytes)
-	return result
+	data := make([]byte, 2+len(topicBytes)+len(payloadBytes))
+	binary.BigEndian.PutUint16(data[:2], uint16(len(topicBytes)))
+	copy(data[2:2+len(topicBytes)], topicBytes)
+	copy(data[2+len(topicBytes):], payloadBytes)
+	return data
 }
 
 func TestPublisher_CreateTopic(t *testing.T) {
@@ -81,7 +77,21 @@ func TestEncodeMessage(t *testing.T) {
 	payload := "hello"
 	data := EncodeMessage(topic, payload)
 
-	if string(data) != topic+payload {
-		t.Errorf("Encoded data mismatch, got %s", string(data))
+	if len(data) < 2 {
+		t.Fatalf("Encoded data too short: %d bytes", len(data))
+	}
+
+	topicLen := int(binary.BigEndian.Uint16(data[:2]))
+	if topicLen != len(topic) {
+		t.Errorf("Topic length mismatch: expected %d, got %d", len(topic), topicLen)
+	}
+
+	decodedTopic := string(data[2 : 2+topicLen])
+	decodedPayload := string(data[2+topicLen:])
+	if decodedTopic != topic {
+		t.Errorf("Topic mismatch: expected %q, got %q", topic, decodedTopic)
+	}
+	if decodedPayload != payload {
+		t.Errorf("Payload mismatch: expected %q, got %q", payload, decodedPayload)
 	}
 }

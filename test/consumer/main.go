@@ -394,10 +394,6 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 		log.Printf("Warning: Failed to clear read deadline: %v", err)
 	}
 
-	if len(messages) == 0 {
-		c.offsetManager.Commit(partition, offset+1)
-	}
-
 	return messages, nil
 }
 
@@ -610,10 +606,6 @@ func main() {
 			messageCount++
 			fmt.Printf("[%d] Partition %d, Offset %d: %s\n",
 				messageCount, msg.Partition, msg.Offset, msg.Payload)
-		}
-
-		if len(messages) == 0 {
-			fmt.Printf("No new messages (total consumed: %d)\n", messageCount)
 		}
 	}
 }
