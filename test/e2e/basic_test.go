@@ -16,7 +16,7 @@ func TestBasicPubSub(t *testing.T) {
 		ConsumeMessages().
 		Then().
 		Expect(BrokerIsHealthy()).
-		And(MessagesPublished(10)).
+		And(MessagesPublishedSince(10, ctx.startTime)).
 		And(MessagesConsumed(10))
 }
 
@@ -32,5 +32,5 @@ func TestConfigValidation(t *testing.T) {
 		StartBroker().
 		PublishMessages().
 		Then().
-		Expect(MessagesPublished(5))
+		Expect(MessagesPublishedSince(5, ctx.startTime))
 }

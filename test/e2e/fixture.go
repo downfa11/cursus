@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+const (
+	e2eComposeFile      = "test/docker-compose.yml"
+	healthCheckURL      = "http://localhost:9080/health"
+	defaultBrokerAddr   = "localhost:9000"
+	healthCheckRetries  = 30
+	healthCheckInterval = 1 * time.Second
+)
+
 // Context holds test environment configuration (Given phase)
 type Context struct {
 	t              *testing.T
@@ -16,6 +24,7 @@ type Context struct {
 	partitions     int
 	numMessages    int
 	publishDelayMS int
+	startTime      time.Time
 }
 
 // Actions performs test actions (When phase)
@@ -32,11 +41,12 @@ type Consequences struct {
 func Given(t *testing.T) *Context {
 	return &Context{
 		t:              t,
-		brokerAddr:     "localhost:9000",
+		brokerAddr:     defaultBrokerAddr,
 		topic:          "test-topic",
 		partitions:     4,
 		numMessages:    10,
 		publishDelayMS: 100,
+		startTime:      time.Now(),
 	}
 }
 
@@ -76,8 +86,8 @@ func (a *Actions) StartBroker() *Actions {
 }
 
 func waitForHealth() error {
-	for i := 0; i < 30; i++ {
-		resp, err := http.Get("http://localhost:9080/health")
+	for i := 0; i < healthCheckRetries; i++ {
+		resp, err := http.Get(healthCheckURL)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
 			return nil
@@ -85,14 +95,14 @@ func waitForHealth() error {
 		if resp != nil {
 			resp.Body.Close()
 		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(healthCheckInterval)
 	}
 	return fmt.Errorf("broker never became healthy")
 }
 
 // StopBroker stops the broker for retry testing
 func (a *Actions) StopBroker() *Actions {
-	cmd := exec.Command("docker", "compose", "-f", "test/docker-compose.yml", "stop", "broker")
+	cmd := exec.Command("docker", "compose", "-f", e2eComposeFile, "stop", "broker")
 	if err := cmd.Run(); err != nil {
 		a.ctx.t.Logf("Warning: Failed to stop broker: %v", err)
 	}
@@ -102,7 +112,6 @@ func (a *Actions) StopBroker() *Actions {
 
 // Cleanup is now a no-op since Makefile handles cleanup
 func (c *Context) Cleanup() {
-	// Makefile의 e2e-clean이 모든 정리를 담당
 	c.t.Log("Cleanup will be handled by Makefile")
 }
 

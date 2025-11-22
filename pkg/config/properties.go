@@ -176,6 +176,9 @@ func (cfg *Config) Normalize() {
 	if cfg.HeartbeatIntervalMS <= 0 {
 		cfg.HeartbeatIntervalMS = 3000
 	}
+	if cfg.HeartbeatIntervalMS > int(time.Minute.Milliseconds()) {
+		cfg.HeartbeatIntervalMS = int(time.Minute.Milliseconds())
+	}
 	if cfg.SessionTimeoutMS <= 0 {
 		cfg.SessionTimeoutMS = 30000
 	}
@@ -186,6 +189,10 @@ func (cfg *Config) Normalize() {
 	if cfg.RebalanceTimeoutMS <= 0 {
 		cfg.RebalanceTimeoutMS = 60000
 	}
+	if cfg.RebalanceTimeoutMS < cfg.SessionTimeoutMS {
+		cfg.RebalanceTimeoutMS = cfg.SessionTimeoutMS
+	}
+
 	if cfg.MaxPollRecords <= 0 {
 		cfg.MaxPollRecords = 8192
 	}
@@ -253,8 +260,7 @@ func (cfg *Config) Normalize() {
 	if cfg.UseTLS {
 		if cfg.TLSCertPath == "" || cfg.TLSKeyPath == "" {
 			cfg.UseTLS = false
-		}
-		if cfg.UseTLS {
+		} else {
 			cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
 			if err != nil {
 				cfg.UseTLS = false
@@ -262,9 +268,5 @@ func (cfg *Config) Normalize() {
 				cfg.TLSCert = cert
 			}
 		}
-	}
-
-	if cfg.HeartbeatIntervalMS > int(time.Minute.Milliseconds()) {
-		cfg.HeartbeatIntervalMS = int(time.Minute.Milliseconds())
 	}
 }

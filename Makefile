@@ -21,11 +21,19 @@ test:
 	@echo "[MAKE] Running unit tests..."  
 	$(GO) test $(TEST_FLAGS) $(shell go list ./... | grep -v /test/e2e)
 
-.PHONY: e2e    
-e2e: e2e-build e2e-up  
-	@echo "[MAKE] Running E2E tests..."    
-	$(GO) test -v -timeout 10m ./test/e2e/... || (make e2e-logs && make e2e-clean && exit 1)  
-	@make e2e-clean  
+.PHONY: e2e  
+e2e: e2e-build e2e-up
+	@echo "[MAKE] Running E2E tests..."
+	@bash -c '\
+	$(GO) test -v -timeout 10m ./test/e2e/...; \
+	TEST_EXIT=$$?; \
+	if [ $$TEST_EXIT -ne 0 ]; then \
+		echo "[MAKE] Tests failed with exit code $$TEST_EXIT, showing logs..."; \
+		make e2e-logs; \
+	fi; \
+	make e2e-clean; \
+	exit $$TEST_EXIT; \
+	'
   
 .PHONY: e2e-up    
 e2e-up:    
@@ -48,7 +56,7 @@ e2e-build:
 e2e-clean:    
 	@echo "[MAKE] Cleaning E2E test environment..."    
 	docker compose -f $(E2E_COMPOSE_FILE) down -v  
-	-docker run --rm -v $(PWD)/test/logs:/logs alpine rm -rf /logs/*
+	-docker run --rm -v $(PWD)/test/logs:/logs alpine rm -rf /logs/* || echo "Failed to clean logs (may not exist)"
   
 .PHONY: e2e-logs  
 e2e-logs:  
