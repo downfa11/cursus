@@ -29,6 +29,7 @@ func main() {
 	ch := controller.NewCommandHandler(tm, dm, cfg, om, cd)
 
 	fmt.Println("🔹 Broker ready. Type HELP for commands.")
+	fmt.Println("")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {

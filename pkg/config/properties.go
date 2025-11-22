@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -69,6 +70,7 @@ type Config struct {
 
 func LoadConfig() (*Config, error) {
 	cfg := &Config{}
+	configPath := flag.String("config", "", "Path to YAML/JSON config file")
 
 	// default flags
 	flag.IntVar(&cfg.BrokerPort, "port", 9000, "Broker port")
@@ -110,11 +112,10 @@ func LoadConfig() (*Config, error) {
 	flag.IntVar(&cfg.ConsumerChannelBufSize, "consumer-ch-buffer", 1000, "Consumer channel buffer size")
 	flag.BoolVar(&cfg.AutoCreateTopics, "auto-create-topics", true, "Auto-create topics on publish")
 
-	configPath := flag.String("config", "", "Path to YAML/JSON config file")
-
 	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" && *configPath == "" {
 		*configPath = envPath
 	}
+
 	flag.Parse()
 
 	// file load (YAML or JSON)
@@ -135,18 +136,141 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	// bootstrap string split
-	if len(cfg.BootstrapServers) == 1 && strings.Contains(cfg.BootstrapServers[0], ",") {
-		cfg.BootstrapServers = strings.Split(cfg.BootstrapServers[0], ",")
-	}
-
-	if cfg.UseTLS && cfg.TLSCertPath != "" && cfg.TLSKeyPath != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
-		if err != nil {
-			return nil, err
-		}
-		cfg.TLSCert = cert
-	}
-
+	cfg.Normalize()
 	return cfg, nil
+}
+
+func (cfg *Config) Normalize() {
+	if cfg.BrokerPort <= 0 {
+		cfg.BrokerPort = 9000
+	}
+	if cfg.HealthCheckPort <= 0 {
+		cfg.HealthCheckPort = 9080
+	}
+	if strings.TrimSpace(cfg.LogDir) == "" {
+		cfg.LogDir = "broker-logs"
+	}
+	if cfg.ExporterPort <= 0 {
+		cfg.ExporterPort = 9100
+	}
+
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = 300
+	}
+
+	// message / ack
+	if cfg.Acks != "0" && cfg.Acks != "1" && cfg.Acks != "all" {
+		cfg.Acks = "0"
+	}
+	if cfg.AckTimeoutMS <= 0 {
+		cfg.AckTimeoutMS = 5000
+	}
+
+	// consumer
+	switch cfg.AutoOffsetReset {
+	case "earliest", "latest":
+	default:
+		cfg.AutoOffsetReset = "latest"
+	}
+
+	if cfg.HeartbeatIntervalMS <= 0 {
+		cfg.HeartbeatIntervalMS = 3000
+	}
+	if cfg.HeartbeatIntervalMS > int(time.Minute.Milliseconds()) {
+		cfg.HeartbeatIntervalMS = int(time.Minute.Milliseconds())
+	}
+	if cfg.SessionTimeoutMS <= 0 {
+		cfg.SessionTimeoutMS = 30000
+	}
+	// Ensure session timeout is greater than heartbeat interval
+	if cfg.SessionTimeoutMS <= cfg.HeartbeatIntervalMS {
+		cfg.SessionTimeoutMS = cfg.HeartbeatIntervalMS * 10
+	}
+	if cfg.RebalanceTimeoutMS <= 0 {
+		cfg.RebalanceTimeoutMS = 60000
+	}
+	if cfg.RebalanceTimeoutMS < cfg.SessionTimeoutMS {
+		cfg.RebalanceTimeoutMS = cfg.SessionTimeoutMS
+	}
+
+	if cfg.MaxPollRecords <= 0 {
+		cfg.MaxPollRecords = 8192
+	}
+
+	// DiskHandler
+	if cfg.DiskFlushBatchSize <= 0 {
+		cfg.DiskFlushBatchSize = 50
+	}
+	if cfg.LingerMS < 0 {
+		cfg.LingerMS = 0
+	}
+	if cfg.ChannelBufferSize <= 0 {
+		cfg.ChannelBufferSize = 1024
+	}
+	if cfg.DiskWriteTimeoutMS <= 0 {
+		cfg.DiskWriteTimeoutMS = 5
+	}
+	if cfg.SegmentSize < 1024 {
+		cfg.SegmentSize = 1 << 20
+	}
+	if cfg.SegmentRollTimeMS < 0 {
+		cfg.SegmentRollTimeMS = 0
+	}
+
+	// partition/topic
+	if cfg.PartitionChannelBufSize <= 0 {
+		cfg.PartitionChannelBufSize = 10000
+	}
+	if cfg.ConsumerChannelBufSize <= 0 {
+		cfg.ConsumerChannelBufSize = 1000
+	}
+
+	// bootstrap
+	if len(cfg.BootstrapServers) == 1 &&
+		strings.Contains(cfg.BootstrapServers[0], ",") {
+		servers := strings.Split(cfg.BootstrapServers[0], ",")
+		for i := range servers {
+			servers[i] = strings.TrimSpace(servers[i])
+		}
+		cfg.BootstrapServers = servers
+	}
+	if len(cfg.BootstrapServers) == 0 {
+		cfg.BootstrapServers = []string{"localhost:9000"}
+	}
+
+	// static consumer groups
+	for i := range cfg.StaticConsumerGroups {
+		g := &cfg.StaticConsumerGroups[i]
+
+		if strings.TrimSpace(g.Name) == "" {
+			g.Name = "default-group"
+		}
+		if g.ConsumerCount <= 0 {
+			g.ConsumerCount = 1
+		}
+		if len(g.Topics) == 0 {
+			g.Topics = []string{"default-topic"}
+		}
+		if g.TopicPartitions == nil {
+			g.TopicPartitions = map[string]int{}
+		}
+		for _, topic := range g.Topics {
+			if g.TopicPartitions[topic] <= 0 {
+				g.TopicPartitions[topic] = 1
+			}
+		}
+	}
+
+	if cfg.UseTLS {
+		if cfg.TLSCertPath == "" || cfg.TLSKeyPath == "" {
+			cfg.UseTLS = false
+		} else {
+			cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+			if err != nil {
+				cfg.UseTLS = false
+			} else {
+				cfg.TLSCert = cert
+			}
+		}
+	}
 }

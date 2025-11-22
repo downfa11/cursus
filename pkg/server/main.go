@@ -129,7 +129,11 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			return
 		}
 
-		log.Printf("[REQ] [%s] Received request. Topic: '%s', Payload: '%s'", clientAddr, topicName, payload)
+		if isCommand(payload) {
+			log.Printf("[%s] Received command. Payload: '%s'", clientAddr, payload)
+		} else {
+			log.Printf("[%s] Received request. Payload: '%s'", clientAddr, payload)
+		}
 
 		var resp string
 		cmdStr := payload

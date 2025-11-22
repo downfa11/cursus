@@ -10,12 +10,14 @@ type OffsetManager struct {
 	offsets map[string]map[string]map[int]int64 // groupID -> topic -> partition -> offset
 }
 
+// NewOffsetManager initializes the offset manager.
 func NewOffsetManager() *OffsetManager {
 	return &OffsetManager{
 		offsets: make(map[string]map[string]map[int]int64),
 	}
 }
 
+// GetOffset returns the stored offset for a given group/topic/partition.
 func (om *OffsetManager) GetOffset(groupID, topic string, partition int) (int64, error) {
 	om.mu.RLock()
 	defer om.mu.RUnlock()
@@ -30,6 +32,7 @@ func (om *OffsetManager) GetOffset(groupID, topic string, partition int) (int64,
 	return -1, fmt.Errorf("no offset found")
 }
 
+// CommitOffset saves the offset for a given group/topic/partition.
 func (om *OffsetManager) CommitOffset(groupID, topic string, partition int, offset int64) error {
 	om.mu.Lock()
 	defer om.mu.Unlock()

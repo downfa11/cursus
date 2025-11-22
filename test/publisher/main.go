@@ -21,6 +21,8 @@ type PublisherConfig struct {
 	AckTimeoutMS   int    `yaml:"ack_timeout_ms" json:"ack_timeout_ms"`
 	Topic          string `yaml:"topic" json:"topic"`
 	Partitions     int    `yaml:"partitions" json:"partitions"`
+	NumMessages    int    `yaml:"num_messages" json:"num_messages"`
+	PublishDelayMS int    `yaml:"publish_delay_ms" json:"publish_delay_ms"`
 }
 
 func LoadPublisherConfig() (*PublisherConfig, error) {
@@ -33,6 +35,8 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.IntVar(&cfg.AckTimeoutMS, "ack-timeout-ms", 5000, "ACK timeout in milliseconds")
 	flag.StringVar(&cfg.Topic, "topic", "my-topic", "Topic name")
 	flag.IntVar(&cfg.Partitions, "partitions", 4, "Number of partitions")
+	flag.IntVar(&cfg.NumMessages, "num-messages", 10, "Number of messages to publish")
+	flag.IntVar(&cfg.PublishDelayMS, "publish-delay-ms", 100, "Delay between messages in milliseconds")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
 	flag.Parse()
@@ -52,6 +56,28 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 				return nil, fmt.Errorf("failed to parse YAML config: %w", err)
 			}
 		}
+	}
+
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = 0
+	}
+	if cfg.RetryBackoffMS <= 0 {
+		cfg.RetryBackoffMS = 100
+	}
+	if cfg.AckTimeoutMS <= 0 {
+		cfg.AckTimeoutMS = 1
+	}
+	if cfg.Partitions <= 0 {
+		cfg.Partitions = 1
+	}
+	if cfg.NumMessages < 0 {
+		cfg.NumMessages = 0
+	}
+	if cfg.PublishDelayMS < 0 {
+		cfg.PublishDelayMS = 0
+	}
+	if strings.TrimSpace(cfg.Topic) == "" {
+		cfg.Topic = "default-topic"
 	}
 
 	return cfg, nil
@@ -106,50 +132,58 @@ func EncodeMessage(topic, payload string) []byte {
 	return data
 }
 
-func (p *Publisher) SendWithRetry(conn net.Conn, data []byte) error {
+func (p *Publisher) SendWithRetry(data []byte) error {
 	ackTimeout := time.Duration(p.config.AckTimeoutMS) * time.Millisecond
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
-		if err := WriteWithLength(conn, data); err != nil {
-			if attempt == p.config.MaxRetries {
-				return fmt.Errorf("max retries exceeded: %w", err)
-			}
-
-			backoff := time.Duration(1<<attempt) * time.Duration(p.config.RetryBackoffMS) * time.Millisecond
-			fmt.Printf("Send failed (attempt %d/%d), retrying in %v: %v\n",
-				attempt+1, p.config.MaxRetries+1, backoff, err)
-			time.Sleep(backoff)
-			continue
+		err := p.tryOnce(data, ackTimeout)
+		if err == nil {
+			return nil
 		}
 
-		if err := conn.SetReadDeadline(time.Now().Add(ackTimeout)); err != nil {
-			return fmt.Errorf("set read deadline: %w", err)
+		if attempt == p.config.MaxRetries {
+			return fmt.Errorf("max retries exceeded: %w", err)
 		}
 
-		resp, err := ReadWithLength(conn)
-		if err != nil {
-			if attempt == p.config.MaxRetries {
-				return fmt.Errorf("ack timeout after %d retries: %w", p.config.MaxRetries, err)
-			}
+		backoff := time.Duration(1<<attempt) * time.Duration(p.config.RetryBackoffMS) * time.Millisecond
+		fmt.Printf("Attempt %d/%d failed (%v), retrying in %v\n",
+			attempt+1, p.config.MaxRetries+1, err, backoff)
 
-			backoff := time.Duration(1<<attempt) * time.Duration(p.config.RetryBackoffMS) * time.Millisecond
-			fmt.Printf("ACK timeout (attempt %d/%d), retrying in %v\n",
-				attempt+1, p.config.MaxRetries+1, backoff)
-			time.Sleep(backoff)
-			continue
-		}
-
-		_ = conn.SetReadDeadline(time.Time{})
-		respStr := strings.TrimSpace(string(resp))
-
-		if strings.HasPrefix(respStr, "ERROR:") {
-			return fmt.Errorf("broker error: %s", respStr)
-		}
-
-		return nil
+		time.Sleep(backoff)
 	}
 
-	return fmt.Errorf("failed after %d attempts", p.config.MaxRetries+1)
+	return fmt.Errorf("unexpected retry loop exit")
+}
+
+func (p *Publisher) tryOnce(data []byte, ackTimeout time.Duration) error {
+	conn, err := net.Dial("tcp", p.config.BrokerAddr)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	defer conn.Close()
+
+	if err := WriteWithLength(conn, data); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+
+	// ACK deadline
+	if err := conn.SetReadDeadline(time.Now().Add(ackTimeout)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+
+	// READ ACK
+	resp, err := ReadWithLength(conn)
+	if err != nil {
+		return fmt.Errorf("read ack: %w", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Time{})
+	msg := strings.TrimSpace(string(resp))
+	if strings.HasPrefix(msg, "ERROR:") {
+		return fmt.Errorf("broker error: %s", msg)
+	}
+
+	return nil
 }
 
 func (p *Publisher) CreateTopic() error {
@@ -161,7 +195,7 @@ func (p *Publisher) CreateTopic() error {
 
 	createCmd := EncodeMessage(p.config.Topic, fmt.Sprintf("CREATE %s %d", p.config.Topic, p.config.Partitions))
 
-	if err := p.SendWithRetry(conn, createCmd); err != nil {
+	if err := p.SendWithRetry(createCmd); err != nil {
 		if strings.Contains(err.Error(), "topic exists") || strings.Contains(err.Error(), "already exists") {
 			fmt.Printf("Topic '%s' already exists\n", p.config.Topic)
 			return nil
@@ -181,7 +215,7 @@ func (p *Publisher) PublishMessage(message string) error {
 	defer conn.Close()
 
 	msgBytes := EncodeMessage(p.config.Topic, message)
-	return p.SendWithRetry(conn, msgBytes)
+	return p.SendWithRetry(msgBytes)
 }
 
 func main() {
@@ -206,7 +240,7 @@ func main() {
 	}
 
 	fmt.Println("\nPublishing messages...")
-	for i := 0; i < 10; i++ {
+	for i := 0; i < cfg.NumMessages; i++ {
 		message := fmt.Sprintf("Hello from Go client! Message #%d", i)
 
 		if err := publisher.PublishMessage(message); err != nil {
@@ -215,7 +249,7 @@ func main() {
 		}
 
 		fmt.Printf("Message %d published successfully\n", i)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(time.Duration(cfg.PublishDelayMS) * time.Millisecond)
 	}
 
 	fmt.Println("\n All messages published successfully!")

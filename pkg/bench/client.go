@@ -64,15 +64,15 @@ func (c *BenchClient) sendCommand(conn net.Conn, topic, payload string) error {
 	}
 
 	resp := strings.TrimSpace(string(respBuf))
-	switch resp {
-	case "OK", "TOPIC CREATED":
-		return nil
-	case "TOPIC EXISTS":
-		fmt.Printf("Topic '%s' already exists, continuing...\n", topic)
-		return nil
-	default:
-		return fmt.Errorf("broker rejected response: %s", resp)
+	if resp == "" {
+		return fmt.Errorf("empty response from broker")
 	}
+
+	if strings.HasPrefix(resp, "ERROR:") {
+		return fmt.Errorf("broker error: %s", resp)
+	}
+
+	return nil
 }
 
 // sendMessagesToPartition sends benchmark messages for a specific partition.

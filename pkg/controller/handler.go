@@ -17,6 +17,7 @@ import (
 	"github.com/downfa11-org/go-broker/util"
 )
 
+const DefaultMaxPollRecords = 8192
 const STREAM_DATA_SIGNAL = "STREAM_DATA"
 
 type CommandHandler struct {
@@ -50,7 +51,7 @@ func (ch *CommandHandler) logCommandResult(cmd, response string) {
 	}
 
 	cleanResponse := strings.ReplaceAll(response, "\n", " ")
-	log.Printf("[CMD] %s | Command: [%s] | Response: %s", status, cmd, cleanResponse)
+	log.Printf("%s | Command: [%s] | Response: %s", status, cmd, cleanResponse)
 }
 
 // HandleConsumeCommand is responsible for parsing the CONSUME command and streaming messages.
@@ -71,6 +72,11 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		return 0, fmt.Errorf("invalid offset: %w", err)
 	}
 
+	t := ch.TopicManager.GetTopic(topicName)
+	if t == nil {
+		return 0, fmt.Errorf("topic '%s' does not exist", topicName)
+	}
+
 	dh, err := ch.DiskManager.GetHandler(topicName, partition)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get disk handler: %w", err)
@@ -78,49 +84,52 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 
 	startTime := time.Now()
 
-	// Resolve offset using auto.offset.reset policy
 	actualOffset := requestedOffset
-	if requestedOffset == -1 {
-		// Try to get saved offset from OffsetManager
-		if ch.OffsetManager != nil {
-			savedOffset, err := ch.OffsetManager.GetOffset(ctx.ConsumerGroup, topicName, partition)
-			if err == nil && savedOffset >= 0 {
-				actualOffset = int(savedOffset)
-				log.Printf("[OFFSET] Using saved offset %d for group '%s', topic '%s', partition %d",
-					actualOffset, ctx.ConsumerGroup, topicName, partition)
-			} else {
-				// No saved offset, apply auto.offset.reset policy
-				if ch.Config.AutoOffsetReset == "earliest" {
-					actualOffset = 0
-					log.Printf("[OFFSET] No saved offset, using 'earliest' (0) for group '%s'", ctx.ConsumerGroup)
-				} else { // "latest"
-					latestOffset, err := dh.GetLatestOffset()
-					if err != nil {
-						return 0, fmt.Errorf("failed to get latest offset: %w", err)
-					}
-					actualOffset = latestOffset
-					log.Printf("[OFFSET] No saved offset, using 'latest' (%d) for group '%s'",
-						actualOffset, ctx.ConsumerGroup)
-				}
-			}
+	log.Printf("Requested offset: %d for group '%s'", requestedOffset, ctx.ConsumerGroup)
+
+	// check consumer group's committed offset
+	if requestedOffset == -1 || requestedOffset == 0 {
+		log.Printf("Checking consumer group '%s' committed offset for topic '%s' partition %d",
+			ctx.ConsumerGroup, topicName, partition)
+
+		if committedOffset, ok := t.GetCommittedOffset(ctx.ConsumerGroup, partition); ok {
+			actualOffset = int(committedOffset)
+			log.Printf("[OFFSET] Using consumer group committed offset %d for group '%s', topic '%s', partition %d",
+				actualOffset, ctx.ConsumerGroup, topicName, partition)
 		} else {
-			// OffsetManager not available, use config default
-			if ch.Config.AutoOffsetReset == "earliest" {
-				actualOffset = 0
-			} else {
-				latestOffset, err := dh.GetLatestOffset()
-				if err != nil {
-					return 0, fmt.Errorf("failed to get latest offset: %w", err)
+			if ch.OffsetManager != nil {
+				savedOffset, err := ch.OffsetManager.GetOffset(ctx.ConsumerGroup, topicName, partition)
+				if err == nil && savedOffset >= 0 {
+					actualOffset = int(savedOffset)
+					log.Printf("[OFFSET] Using OffsetManager saved offset %d for group '%s', topic '%s', partition %d",
+						actualOffset, ctx.ConsumerGroup, topicName, partition)
+				} else {
+					log.Printf("[WARN] Failed to get saved offset, falling back to auto offset: %v", err)
+					actualOffset, err = ch.resolveAutoOffset(dh, ctx.ConsumerGroup)
+					if err != nil {
+						return 0, err
+					}
+					log.Printf("[OFFSET] Fallback offset applied: %d for group '%s'", actualOffset, ctx.ConsumerGroup)
 				}
-				actualOffset = latestOffset
+			} else {
+				log.Printf("[WARN] OffsetManager is nil, using auto offset for group '%s'", ctx.ConsumerGroup)
+				actualOffset, err = ch.resolveAutoOffset(dh, ctx.ConsumerGroup)
+				if err != nil {
+					return 0, err
+				}
+				log.Printf("[OFFSET] Fallback offset applied: %d for group '%s'", actualOffset, ctx.ConsumerGroup)
 			}
 		}
+	} else {
+		log.Printf("Requested offset is specified: %d for group '%s'", requestedOffset, ctx.ConsumerGroup)
+		log.Printf("Using requested offset as actual offset: %d for group '%s'", actualOffset, ctx.ConsumerGroup)
 	}
 
-	maxMessages := 8192 // default
+	maxMessages := DefaultMaxPollRecords
 	if ch.Config != nil && ch.Config.MaxPollRecords > 0 {
 		maxMessages = ch.Config.MaxPollRecords
 	}
+	log.Printf("Max messages to fetch: %d", maxMessages)
 
 	messages, err := dh.ReadMessages(actualOffset, maxMessages)
 	if err != nil {
@@ -131,7 +140,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	lastOffset := actualOffset
 	for _, msg := range messages {
 		msgBytes := []byte(msg.Payload)
-
 		if err := util.WriteWithLength(conn, msgBytes); err != nil {
 			return streamedCount, fmt.Errorf("failed to stream message: %w", err)
 		}
@@ -139,13 +147,21 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		lastOffset++
 	}
 
-	// Optionally commit offset after successful consumption
-	if ch.OffsetManager != nil && streamedCount > 0 {
-		if err := ch.OffsetManager.CommitOffset(ctx.ConsumerGroup, topicName, partition, int64(lastOffset)); err != nil {
-			log.Printf("[OFFSET_WARN] Failed to commit offset: %v", err)
+	if streamedCount > 0 {
+		if err := t.CommitOffset(ctx.ConsumerGroup, partition, int64(lastOffset)); err != nil {
+			log.Printf("[OFFSET_WARN] Failed to commit offset to topic for group '%s': %v", ctx.ConsumerGroup, err)
 		} else {
-			log.Printf("[OFFSET] Successfully committed offset %d for group '%s', topic '%s', partition %d",
+			log.Printf("[OFFSET] Successfully committed offset %d to topic for group '%s', topic '%s', partition %d",
 				lastOffset, ctx.ConsumerGroup, topicName, partition)
+		}
+
+		if ch.OffsetManager != nil {
+			if err := ch.OffsetManager.CommitOffset(ctx.ConsumerGroup, topicName, partition, int64(lastOffset)); err != nil {
+				log.Printf("[OFFSET_WARN] Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
+			} else {
+				log.Printf("[OFFSET] Successfully committed offset %d to OffsetManager for group '%s', topic '%s', partition %d",
+					lastOffset, ctx.ConsumerGroup, topicName, partition)
+			}
 		}
 	}
 
@@ -154,6 +170,28 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		streamedCount, topicName, partition, duration)
 
 	return streamedCount, nil
+}
+
+// resolveAutoOffset applies the auto.offset.reset policy to determine the starting offset
+func (ch *CommandHandler) resolveAutoOffset(dh *disk.DiskHandler, groupName string) (int, error) {
+	if ch.Config != nil && ch.Config.AutoOffsetReset == "earliest" {
+		log.Printf("[OFFSET] Using 'earliest' (0) for group '%s'", groupName)
+		return 0, nil
+	}
+	if ch.Config == nil {
+		log.Printf("[WARN] Config is nil, defaulting auto.offset.reset to 'latest' for group '%s'", groupName)
+	} else if ch.Config.AutoOffsetReset != "latest" {
+		log.Printf("[WARN] Unknown auto.offset.reset '%s', defaulting to 'latest' for group '%s'",
+			ch.Config.AutoOffsetReset, groupName)
+	}
+
+	// "latest"
+	latestOffset, err := dh.GetLatestOffset()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get latest offset: %w", err)
+	}
+	log.Printf("[OFFSET] Using 'latest' (%d) for group '%s'", latestOffset, groupName)
+	return latestOffset, nil
 }
 
 // HandleCommand processes non-streaming commands and returns a signal for streaming commands.

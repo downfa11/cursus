@@ -43,6 +43,10 @@ type ConsumerConfig struct {
 	// Join group retry
 	JoinGroupMaxRetries   int `yaml:"join_group_max_retries" json:"join_group_max_retries"`
 	JoinGroupRetryDelayMS int `yaml:"join_group_retry_delay_ms" json:"join_group_retry_delay_ms"`
+
+	DefaultPartitions []int `yaml:"default_partitions" json:"default_partitions"`
+	EmptyPollDelayMS  int   `yaml:"empty_poll_delay_ms" json:"empty_poll_delay_ms"`
+	PollTimeoutMS     int   `yaml:"poll_timeout_ms" json:"poll_timeout_ms"`
 }
 
 // Message represents a consumed message
@@ -104,6 +108,8 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 	flag.IntVar(&cfg.RetryBackoffMS, "retry-backoff-ms", 100, "Initial backoff time in milliseconds")
 	flag.IntVar(&cfg.JoinGroupMaxRetries, "join-group-max-retries", 10, "Maximum retry attempts for JOIN_GROUP")
 	flag.IntVar(&cfg.JoinGroupRetryDelayMS, "join-group-retry-delay-ms", 500, "Retry delay in milliseconds for JOIN_GROUP")
+	flag.IntVar(&cfg.EmptyPollDelayMS, "empty-poll-delay-ms", 50, "Delay when no messages available in milliseconds")
+	flag.IntVar(&cfg.PollTimeoutMS, "poll-timeout-ms", 5000, "Poll timeout in milliseconds")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
 	flag.Parse()
@@ -125,6 +131,62 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 		}
 	}
 
+	if strings.TrimSpace(cfg.BrokerAddr) == "" {
+		cfg.BrokerAddr = "localhost:9000"
+	}
+
+	if strings.TrimSpace(cfg.GroupID) == "" {
+		cfg.GroupID = "default-group"
+	}
+
+	if strings.TrimSpace(cfg.Topic) == "" {
+		cfg.Topic = "default-topic"
+	}
+
+	if cfg.HeartbeatIntervalMS <= 0 {
+		cfg.HeartbeatIntervalMS = 1000
+	}
+
+	if cfg.SessionTimeoutMS <= 0 {
+		cfg.SessionTimeoutMS = 5000
+	}
+
+	if cfg.MaxPollRecords <= 0 {
+		cfg.MaxPollRecords = 1
+	}
+
+	if cfg.PollIntervalMS <= 0 {
+		cfg.PollIntervalMS = 200
+	}
+
+	if cfg.AutoCommitIntervalMS <= 0 {
+		cfg.AutoCommitIntervalMS = 1000
+	}
+
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = 0
+	}
+
+	if cfg.RetryBackoffMS <= 0 {
+		cfg.RetryBackoffMS = 50
+	}
+
+	if cfg.JoinGroupMaxRetries <= 0 {
+		cfg.JoinGroupMaxRetries = 5
+	}
+
+	if cfg.JoinGroupRetryDelayMS <= 0 {
+		cfg.JoinGroupRetryDelayMS = 200
+	}
+
+	if cfg.EmptyPollDelayMS < 0 {
+		cfg.EmptyPollDelayMS = 0
+	}
+
+	if cfg.PollTimeoutMS <= 0 {
+		cfg.PollTimeoutMS = 1000
+	}
+
 	if cfg.ConsumerID == "" {
 		cfg.ConsumerID = fmt.Sprintf("consumer-%d", time.Now().UnixNano())
 	}
@@ -143,7 +205,11 @@ func NewConsumer(cfg *ConsumerConfig) (*Consumer, error) {
 	}
 
 	if len(cfg.Partitions) == 0 {
-		cfg.Partitions = []int{0, 1, 2, 3} // default 4 partitions
+		if len(cfg.DefaultPartitions) > 0 {
+			cfg.Partitions = cfg.DefaultPartitions
+		} else {
+			cfg.Partitions = []int{0, 1, 2, 3}
+		}
 	}
 
 	if err := consumer.joinGroup(); err != nil {
@@ -252,6 +318,13 @@ func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
 			continue
 		}
 
+		if len(messages) > 0 {
+			if c.config.AutoCommit {
+				lastOffset := messages[len(messages)-1].Offset
+				c.offsetManager.Commit(partition, lastOffset+1)
+			}
+		}
+
 		allMessages = append(allMessages, messages...)
 
 		// auto commit
@@ -267,6 +340,10 @@ func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
 		c.lastCommitTime = time.Now()
 	}
 
+	if len(allMessages) == 0 {
+		time.Sleep(time.Duration(c.config.EmptyPollDelayMS) * time.Millisecond)
+	}
+
 	return allMessages, nil
 }
 
@@ -277,7 +354,12 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 	}
 	defer conn.Close()
 
-	consumeCmd := fmt.Sprintf("CONSUME %s %d -1", c.config.Topic, partition)
+	timeout := time.Duration(c.config.PollTimeoutMS) * time.Millisecond
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, fmt.Errorf("set read deadline: %w", err)
+	}
+
+	consumeCmd := fmt.Sprintf("CONSUME %s %d %d", c.config.Topic, partition, offset)
 	cmdBytes := EncodeMessage(c.config.Topic, consumeCmd)
 
 	if err := WriteWithLength(conn, cmdBytes); err != nil {
@@ -286,9 +368,16 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 
 	var messages []Message
 	for i := 0; i < c.config.MaxPollRecords; i++ {
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return messages, fmt.Errorf("reset read deadline: %w", err)
+		}
+
 		msgBytes, err := ReadWithLength(conn)
 		if err != nil {
 			if err == io.EOF || strings.Contains(err.Error(), "EOF") {
+				break
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				break
 			}
 			return messages, err
@@ -299,6 +388,10 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 			Offset:    offset + i,
 			Payload:   string(msgBytes),
 		})
+	}
+
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		log.Printf("Warning: Failed to clear read deadline: %v", err)
 	}
 
 	return messages, nil
@@ -513,10 +606,6 @@ func main() {
 			messageCount++
 			fmt.Printf("[%d] Partition %d, Offset %d: %s\n",
 				messageCount, msg.Partition, msg.Offset, msg.Payload)
-		}
-
-		if len(messages) == 0 {
-			fmt.Printf("No new messages (total consumed: %d)\n", messageCount)
 		}
 	}
 }
