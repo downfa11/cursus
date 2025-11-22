@@ -147,11 +147,13 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 		g.Consumers = append(g.Consumers, newConsumer)
 
 		if t.coordinator != nil {
-			if _, err := t.coordinator.AddConsumer(groupName, fmt.Sprintf("%d", newConsumerID)); err != nil {
+			if assignments, err := t.coordinator.AddConsumer(groupName, fmt.Sprintf("%d", newConsumerID)); err != nil {
 				fmt.Printf("❌ failed to add consumer %d: %v\n", newConsumerID, err)
 			} else {
-				assignments := t.coordinator.GetAssignments(groupName)
-				t.applyAssignments(groupName, assignments)
+				assignmentMap := map[string][]int{
+					fmt.Sprintf("%d", newConsumerID): assignments,
+				}
+				t.applyAssignments(groupName, assignmentMap)
 			}
 		}
 		return g
@@ -276,7 +278,7 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 	for _, consumer := range group.Consumers {
 		select {
 		case <-consumer.stopCh:
-			// already close
+			// already closed
 		default:
 			close(consumer.stopCh)
 		}

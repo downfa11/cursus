@@ -198,6 +198,7 @@ func (a *Actions) PublishMessages() *Actions {
 	}
 
 	a.ctx.t.Logf("Published %d/%d messages successfully", a.ctx.publishedCount, a.ctx.numMessages)
+	time.Sleep(500 * time.Millisecond)
 	return a
 }
 

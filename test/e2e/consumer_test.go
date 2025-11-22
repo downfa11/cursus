@@ -68,11 +68,13 @@ func TestDefaultGroupOffsetSharing(t *testing.T) {
 		Expect(MessagesConsumed(10))
 
 	ctx2 := Given(t)
+	defer ctx2.Cleanup()
 
 	ctx2.WithTopic("shared-topic").
 		WithDefaultConsumerGroup().
 		WithPartitions(1).
 		When().
+		StartBroker().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(0))
