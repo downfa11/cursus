@@ -205,24 +205,24 @@ func (t *Topic) Publish(msg types.Message) {
 	var idx int
 	t.mu.Lock()
 
-	util.Debug("[TOPIC_PUBLISH] Starting publish. Topic: %s, Key: %s, Partition count: %d",
+	util.Debug("Starting publish. Topic: %s, Key: %s, Partition count: %d",
 		t.Name, msg.Key, len(t.Partitions))
 
 	if msg.Key != "" {
 		keyID := util.GenerateID(msg.Key)
 		idx = int(keyID % uint64(len(t.Partitions)))
-		util.Debug("[TOPIC_PUBLISH] Key-based routing to partition %d", idx)
+		util.Debug("Key-based routing to partition %d", idx)
 	} else {
 		idx = int(t.counter % uint64(len(t.Partitions)))
 		t.counter++
-		util.Debug("[TOPIC_PUBLISH] Round-robin routing to partition %d (counter: %d)", idx, t.counter)
+		util.Debug("Round-robin routing to partition %d (counter: %d)", idx, t.counter)
 	}
 	t.mu.Unlock()
 
 	p := t.Partitions[idx]
-	util.Debug("[TOPIC_PUBLISH] Calling Partition[%d].Enqueue", idx)
+	util.Debug("Calling Partition[%d].Enqueue", idx)
 	p.Enqueue(msg)
-	util.Debug("[TOPIC_PUBLISH] Enqueue completed")
+	util.Debug("Enqueue completed")
 }
 
 func (t *Topic) PublishSync(msg types.Message) error {
@@ -264,22 +264,22 @@ func (p *Partition) Enqueue(msg types.Message) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closed {
-		util.Debug("[PARTITION_%d] ⚠️ Partition closed, dropping message", p.id)
+		util.Debug("⚠️ Partition closed, dropping message [partition-%d]", p.id)
 		return
 	}
 
-	util.Debug("[PARTITION_%d] Enqueueing message to in-memory channel", p.id)
+	util.Debug("Enqueueing message to in-memory channel [partition-%d]", p.id)
 	p.ch <- msg
 	if appender, ok := p.dh.(DiskAppender); ok {
-		util.Debug("[PARTITION_%d] Calling AppendMessage for disk persistence", p.id)
+		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
 		appender.AppendMessage(msg.Payload)
 	} else {
-		util.Debug("[PARTITION_%d] ⚠️ DiskHandler does not implement AppendMessage\n", p.id)
+		util.Debug("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
 	}
 }
 
 func (p *Partition) EnqueueSync(msg types.Message) error {
-	util.Debug("[PARTITION_%d] EnqueueSync called", p.id)
+	util.Debug("EnqueueSync called [partition-%d]", p.id)
 
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -288,7 +288,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	}
 
 	// send to In-memory
-	util.Debug("[PARTITION_%d] Sending to in-memory channel", p.id)
+	util.Debug("Sending to in-memory channel [partition-%d]", p.id)
 	select {
 	case p.ch <- msg:
 	case <-time.After(5 * time.Second):
@@ -296,7 +296,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	}
 
 	// write sync to disk
-	util.Debug("[PARTITION_%d] Calling AppendMessageSync", p.id)
+	util.Debug("Calling AppendMessageSync [partition-%d]", p.id)
 	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
 		if err := appender.AppendMessageSync(msg.Payload); err != nil {
 			return fmt.Errorf("disk write failed: %w", err)
@@ -305,7 +305,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 		return fmt.Errorf("disk handler does not support sync write")
 	}
 
-	util.Debug("[PARTITION_%d] EnqueueSync completed successfully", p.id)
+	util.Debug("EnqueueSync completed successfully [partition-%d]", p.id)
 	return nil
 }
 

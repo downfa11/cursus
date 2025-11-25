@@ -74,6 +74,7 @@ func (tm *TopicManager) CreateTopic(name string, partitionCount int) *Topic {
 		return nil
 	}
 	tm.topics[name] = t
+	t.RegisterConsumerGroup("default-group", 1)
 	util.Info("✅ topic '%s' created with %d partitions\n", name, partitionCount)
 	return t
 }
@@ -95,7 +96,7 @@ func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) erro
 }
 
 func (tm *TopicManager) publishInternal(topicName string, msg types.Message, requireAck bool) error {
-	util.Debug("[PUBLISH_INTERNAL] Starting publish. Topic: %s, RequireAck: %v, ProducerID: %s, SeqNum: %d",
+	util.Debug("Starting publish. Topic: %s, RequireAck: %v, ProducerID: %s, SeqNum: %d",
 		topicName, requireAck, msg.ProducerID, msg.SeqNum)
 
 	start := time.Now()
@@ -110,7 +111,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 		msg.ID = util.GenerateID(idSource)
 	}
 
-	util.Debug("[PUBLISH_INTERNAL] Generated message ID: %d", msg.ID)
+	util.Debug("Generated message ID: %d", msg.ID)
 
 	now := time.Now()
 	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
@@ -120,9 +121,9 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
-		util.Debug("[PUBLISH_INTERNAL] Topic '%s' not found, checking auto-create", topicName)
+		util.Debug("Topic '%s' not found, checking auto-create", topicName)
 		if tm.cfg.AutoCreateTopics {
-			util.Debug("[PUBLISH_INTERNAL] Auto-creating topic '%s'", topicName)
+			util.Debug("Auto-creating topic '%s'", topicName)
 			t = tm.CreateTopic(topicName, 4)
 			if t == nil {
 				return fmt.Errorf("failed to auto-create topic '%s'", topicName)
@@ -132,17 +133,17 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 		}
 	}
 
-	util.Debug("[PUBLISH_INTERNAL] Topic found/created. Partition count: %d", len(t.Partitions))
+	util.Debug("Topic found/created. Partition count: %d", len(t.Partitions))
 
 	if requireAck {
-		util.Debug("[PUBLISH_INTERNAL] Calling t.PublishSync")
+		util.Debug("Calling t.PublishSync")
 		if err := t.PublishSync(msg); err != nil {
 			// Allow safe retry with same ProducerID+SeqNum
 			tm.dedupMap.Delete(msg.ID)
 			return fmt.Errorf("sync publish failed: %w", err)
 		}
 	} else {
-		util.Debug("[PUBLISH_INTERNAL] Calling t.Publish")
+		util.Debug("Calling t.Publish")
 		t.Publish(msg)
 	}
 
@@ -150,7 +151,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 	metrics.MessagesProcessed.Inc()
 	metrics.LatencyHist.Observe(elapsed)
 
-	util.Debug("[PUBLISH_INTERNAL] Publish completed successfully")
+	util.Debug("Publish completed successfully")
 	return nil
 }
 
@@ -230,4 +231,14 @@ func (tm *TopicManager) ListTopics() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func (tm *TopicManager) EnsureDefaultGroups() {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	for name, t := range tm.topics {
+		t.RegisterConsumerGroup("default-group", 1)
+		util.Info("Registered default-group for topic '%s'", name)
+	}
 }

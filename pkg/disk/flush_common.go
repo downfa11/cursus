@@ -103,7 +103,7 @@ func (d *DiskHandler) flushLoop() {
 // writeBatch writes a batch of messages into the current segment file.
 func (d *DiskHandler) writeBatch(batch []string) {
 	start := time.Now()
-	util.Debug("[WRITE_BATCH] Starting batch write: %d messages", len(batch))
+	util.Debug("Starting batch write: %d messages", len(batch))
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -111,7 +111,7 @@ func (d *DiskHandler) writeBatch(batch []string) {
 	defer d.ioMu.Unlock()
 
 	if d.file == nil {
-		util.Debug("[WRITE_BATCH] Opening new segment file")
+		util.Debug("pening new segment file")
 		if err := d.openSegment(); err != nil {
 			util.Fatal("failed to open segment: %v", err)
 			return
@@ -159,7 +159,7 @@ func (d *DiskHandler) writeBatch(batch []string) {
 			util.Error("sync failed after batch: %v", err)
 		}
 	}
-	util.Debug("[WRITE_BATCH] ✅ Completed in %v", time.Since(start))
+	util.Debug("✅ WriteBatch Completed in %v", time.Since(start))
 }
 
 // WriteDirect writes a single message immediately without batching.

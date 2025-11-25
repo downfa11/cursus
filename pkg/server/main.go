@@ -175,11 +175,12 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 				util.Debug("Calling tm.Publish for topic '%s' with acks=0", topicName)
 				err := tm.Publish(topicName, msg)
 				if err != nil {
-					util.Error(" tm.Publish failed: %v", err)
+					util.Error("tm.Publish failed: %v", err)
 					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					continue
 				}
 				util.Debug("tm.Publish completed successfully")
+				writeResponse(conn, "OK")
 			case "1":
 				// acks=1
 				util.Debug("Calling tm.PublishWithAck for topic '%s' with acks=1", topicName)
@@ -188,11 +189,14 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					continue
 				}
+				util.Debug("tm.Publish completed successfully")
 				writeResponse(conn, "OK")
 			case "all":
 				// TODO: acks=all case with MinInsyncReplicas Option
+				util.Error("acks=all not yet implemented")
 				writeResponse(conn, "ERROR: acks=all not yet implemented")
 			default:
+				util.Error("invalid acks: %s", acks)
 				writeResponse(conn, fmt.Sprintf("ERROR: invalid acks: %s", acks))
 			}
 

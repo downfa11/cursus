@@ -157,7 +157,7 @@ func (d *DiskHandler) AppendMessageSync(payload string) error {
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
 func (d *DiskHandler) AppendMessage(msg string) {
-	util.Debug("[DISK_APPEND] Attempting to append message (len=%d) to writeCh (cap=%d, len=%d)",
+	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)",
 		len(msg), cap(d.writeCh), len(d.writeCh))
 
 	for {
@@ -204,7 +204,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 	dh.mu.Unlock()
 
 	filePath := fmt.Sprintf("%s_segment_%d.log", dh.BaseName, segment)
-	util.Debug("[READ_MESSAGES] Opening segment: %s (offset=%d, max=%d)", filePath, offset, max)
+	util.Debug("Opening segment: %s (offset=%d, max=%d)", filePath, offset, max)
 
 	reader, err := mmap.Open(filePath)
 	if err != nil {
@@ -212,7 +212,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 	}
 	defer reader.Close()
 
-	util.Debug("[READ_MESSAGES] File size: %d bytes", reader.Len())
+	util.Debug("File size: %d bytes", reader.Len())
 
 	messages := []types.Message{}
 	pos := 0
@@ -220,7 +220,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 
 	for len(messages) < max {
 		if pos+4 > reader.Len() {
-			util.Debug("[READ_MESSAGES] Reached EOF at pos=%d (need 4 bytes for length)", pos)
+			util.Debug("Reached EOF at pos=%d (need 4 bytes for length)", pos)
 			break
 		}
 
@@ -234,7 +234,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 		pos += 4
 
 		if pos+int(msgLen) > reader.Len() {
-			util.Debug("[READ_MESSAGES] Incomplete message at pos=%d (need %d bytes, have %d)",
+			util.Debug("Incomplete message at pos=%d (need %d bytes, have %d)",
 				pos, msgLen, reader.Len()-pos)
 			break
 		}
@@ -254,7 +254,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 		}
 		currentMsgIndex++
 	}
-	util.Debug("[READ_MESSAGES] ✅ Read %d messages from %d bytes",
+	util.Debug("✅ Read %d messages from %d bytes",
 		len(messages), pos)
 	return messages, nil
 }
