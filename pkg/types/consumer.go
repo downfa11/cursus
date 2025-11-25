@@ -24,5 +24,5 @@ type Consumer struct {
 type ConsumerGroup struct {
 	Name             string
 	Consumers        []*Consumer
-	CommittedOffsets map[int]int64
+	CommittedOffsets map[int]uint64
 }

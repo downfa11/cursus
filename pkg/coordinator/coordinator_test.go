@@ -8,9 +8,7 @@ import (
 )
 
 func TestCoordinator_Register_Add_Remove(t *testing.T) {
-	cfg := &config.Config{
-		SessionTimeoutMS: 1000,
-	}
+	cfg := &config.Config{}
 	c := coordinator.NewCoordinator(cfg)
 
 	err := c.RegisterGroup("orders", "groupA", 3)
