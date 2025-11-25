@@ -187,7 +187,7 @@ func (c *Coordinator) RecordHeartbeat(groupName, consumerID string) error {
 	old := member.LastHeartbeat
 	member.LastHeartbeat = time.Now()
 
-	util.Info("💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)",
+	util.Debug("💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)",
 		consumerID, groupName, time.Since(old))
 
 	return nil

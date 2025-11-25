@@ -30,7 +30,7 @@ func (c *Coordinator) monitorHeartbeats() {
 						delete(group.Members, memberID)
 						c.triggerRebalance(groupName)
 
-						util.Info("❌ Consumer '%s' removed from group '%s'. Remaining members: %d",
+						util.Debug("❌ Consumer '%s' removed from group '%s'. Remaining members: %d",
 							memberID, groupName, len(group.Members))
 					} else {
 						util.Debug("✅ Consumer '%s' in group '%s' is healthy (last heartbeat: %v ago)",
