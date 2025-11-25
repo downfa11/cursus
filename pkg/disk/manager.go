@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type DiskManager struct {
@@ -55,7 +56,7 @@ func (dm *DiskManager) CloseAllHandlers() {
 	defer dm.mu.Unlock()
 
 	for name, dh := range dm.handlers {
-		fmt.Printf("Closing DiskHandler for %s\n", name)
+		util.Debug("Closing DiskHandler for %s\n", name)
 		dh.Close()
 		delete(dm.handlers, name)
 	}

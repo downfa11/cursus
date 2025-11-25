@@ -1,13 +1,15 @@
 package coordinator
 
 import (
-	"log"
 	"time"
+
+	"github.com/downfa11-org/go-broker/util"
 )
 
 // monitorHeartbeats checks consumer heartbeat intervals and triggers rebalancing when timeouts occur.
 func (c *Coordinator) monitorHeartbeats() {
-	ticker := time.NewTicker(5 * time.Second)
+	checkInterval := time.Duration(c.cfg.ConsumerHeartbeatCheckMS) * time.Millisecond
+	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
 
 	for {
@@ -16,22 +18,22 @@ func (c *Coordinator) monitorHeartbeats() {
 			c.mu.Lock()
 			for groupName, group := range c.groups {
 				for memberID, member := range group.Members {
-					timeout := time.Duration(c.cfg.SessionTimeoutMS) * time.Millisecond
+					timeout := time.Duration(c.cfg.ConsumerSessionTimeoutMS) * time.Millisecond
 					timeSinceLastHeartbeat := time.Since(member.LastHeartbeat)
 
 					if timeSinceLastHeartbeat > timeout {
-						log.Printf("[HEARTBEAT_TIMEOUT] ⚠️ Consumer '%s' in group '%s' timed out (last heartbeat: %v ago, timeout: %v)",
+						util.Error("⚠️ Consumer '%s' in group '%s' timed out (last heartbeat: %v ago, timeout: %v)",
 							memberID, groupName, timeSinceLastHeartbeat, timeout)
-						log.Printf("[REBALANCE_TRIGGER] 🔄 Triggering rebalance for group '%s' due to consumer '%s' timeout",
+						util.Debug("🔄 Triggering rebalance for group '%s' due to consumer '%s' timeout",
 							groupName, memberID)
 
 						delete(group.Members, memberID)
 						c.triggerRebalance(groupName)
 
-						log.Printf("[MEMBER_REMOVED] ❌ Consumer '%s' removed from group '%s'. Remaining members: %d",
+						util.Info("❌ Consumer '%s' removed from group '%s'. Remaining members: %d",
 							memberID, groupName, len(group.Members))
 					} else {
-						log.Printf("[HEARTBEAT_OK] ✅ Consumer '%s' in group '%s' is healthy (last heartbeat: %v ago)",
+						util.Debug("✅ Consumer '%s' in group '%s' is healthy (last heartbeat: %v ago)",
 							memberID, groupName, timeSinceLastHeartbeat)
 					}
 				}

@@ -1,8 +1,7 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"encoding/json"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
@@ -10,17 +9,25 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/offset"
 	"github.com/downfa11-org/go-broker/pkg/server"
 	"github.com/downfa11-org/go-broker/pkg/topic"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 func main() {
 	// Configuration
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("❌ Failed to load config: %v", err)
+		util.Fatal("❌ Failed to load config: %v", err)
 	}
 
-	fmt.Printf("🚀 Starting broker on port %d\n", cfg.BrokerPort)
-	fmt.Printf("🧠 Benchmark: %v | 📊 Exporter: %v\n", cfg.EnableBenchmark, cfg.EnableExporter)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		util.Error("Failed to marshal config: %v", err)
+	} else {
+		util.Info("Configuration:\n%s", string(data))
+	}
+
+	util.Info("🚀 Starting broker on port %d\n", cfg.BrokerPort)
+	util.Info("🧠 Benchmark: %v | 📊 Exporter: %v\n", cfg.EnableBenchmark, cfg.EnableExporter)
 
 	// Initialization
 	dm := disk.NewDiskManager(cfg)
@@ -37,7 +44,7 @@ func main() {
 			}
 			if t != nil {
 				if err := tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount); err != nil {
-					log.Printf("⚠️ Failed to register static consumer group %q on topic %q: %v", gcfg.Name, topicName, err)
+					util.Error("⚠️ Failed to register static consumer group %q on topic %q: %v", gcfg.Name, topicName, err)
 				}
 			}
 		}
@@ -46,6 +53,6 @@ func main() {
 	go cd.Start()
 
 	if err := server.RunServer(cfg, tm, dm, om, cd); err != nil {
-		log.Fatalf("❌ Broker failed: %v", err)
+		util.Fatal("❌ Broker failed: %v", err)
 	}
 }

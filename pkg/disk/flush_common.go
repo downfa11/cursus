@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/downfa11-org/go-broker/util"
 )
 
 // flushLoop continuously processes write batches and handles segment rotation.
@@ -12,6 +14,8 @@ func (d *DiskHandler) flushLoop() {
 	batch := make([]string, 0, d.batchSize)
 	ticker := time.NewTicker(d.linger)
 	defer ticker.Stop()
+
+	util.Debug("Started (batchSize=%d, linger=%v)", d.batchSize, d.linger)
 
 	var segmentTicker *time.Ticker
 	if d.segmentRollTime > 0 {
@@ -23,15 +27,20 @@ func (d *DiskHandler) flushLoop() {
 		select {
 		case msg, ok := <-d.writeCh:
 			if !ok {
+				util.Debug("writeCh closed")
 				continue
 			}
 			batch = append(batch, msg)
+			util.Debug("Received message, batch size now: %d/%d", len(batch), d.batchSize)
+
 			if len(batch) >= d.batchSize {
+				util.Debug("🔥 Batch size threshold reached, flushing %d messages", len(batch))
 				d.writeBatch(batch)
 				batch = batch[:0]
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
+				util.Debug("🔥 Flushing %d messages on timer", len(batch))
 				d.writeBatch(batch)
 				batch = batch[:0]
 			}
@@ -46,7 +55,7 @@ func (d *DiskHandler) flushLoop() {
 			d.ioMu.Lock()
 			if time.Since(d.segmentCreatedAt) >= d.segmentRollTime {
 				if err := d.rotateSegment(); err != nil {
-					log.Printf("ERROR: time-based segment rotation failed: %v", err)
+					util.Error("time-based segment rotation failed: %v", err)
 				}
 			}
 			d.ioMu.Unlock()
@@ -79,10 +88,10 @@ func (d *DiskHandler) flushLoop() {
 
 			if d.file != nil {
 				if err := d.writer.Flush(); err != nil {
-					log.Printf("ERROR: flush failed in shutdown: %v", err)
+					util.Error("flush failed in shutdown: %v", err)
 				}
 				if err := d.file.Sync(); err != nil {
-					log.Printf("ERROR: sync failed during shutdown: %v", err)
+					util.Error("sync failed during shutdown: %v", err)
 				}
 				d.file.Close()
 			}
@@ -93,14 +102,18 @@ func (d *DiskHandler) flushLoop() {
 
 // writeBatch writes a batch of messages into the current segment file.
 func (d *DiskHandler) writeBatch(batch []string) {
+	start := time.Now()
+	util.Debug("[WRITE_BATCH] Starting batch write: %d messages", len(batch))
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
 	defer d.ioMu.Unlock()
 
 	if d.file == nil {
+		util.Debug("[WRITE_BATCH] Opening new segment file")
 		if err := d.openSegment(); err != nil {
-			log.Printf("FATAL: failed to open segment: %v", err)
+			util.Fatal("failed to open segment: %v", err)
 			return
 		}
 	}
@@ -109,22 +122,26 @@ func (d *DiskHandler) writeBatch(batch []string) {
 
 	for _, msg := range batch {
 		data := []byte(msg)
+		if len(data) > 0xFFFFFFFF {
+			util.Error("message too large to write: %d bytes", len(data))
+			continue
+		}
 		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
 
-		totalLen := 4 + len(data)
+		totalLen := uint64(4 + len(data))
 		if d.CurrentOffset+totalLen > d.SegmentSize {
 			if err := d.rotateSegment(); err != nil {
-				log.Printf("ERROR: rotateSegment failed to rotate segment: %v", err)
+				util.Error("rotateSegment failed to rotate segment: %v", err)
 				break
 			}
 		}
 
 		if _, err := d.writer.Write(lenBuf[:]); err != nil {
-			log.Printf("ERROR: writeBatch failed writing length: %v", err)
+			util.Error("writeBatch failed writing length: %v", err)
 			break
 		}
 		if _, err := d.writer.Write(data); err != nil {
-			log.Printf("ERROR: writeBatch failed writing data: %v", err)
+			util.Error("writeBatch failed writing data: %v", err)
 			break
 		}
 
@@ -133,19 +150,22 @@ func (d *DiskHandler) writeBatch(batch []string) {
 	}
 
 	if err := d.writer.Flush(); err != nil {
-		log.Printf("ERROR: flush failed after batch: %v", err)
+		util.Error("flush failed after batch: %v", err)
 		return
 	}
 
 	if d.file != nil {
 		if err := d.file.Sync(); err != nil {
-			log.Printf("ERROR: sync failed after batch: %v", err)
+			util.Error("sync failed after batch: %v", err)
 		}
 	}
+	util.Debug("[WRITE_BATCH] ✅ Completed in %v", time.Since(start))
 }
 
 // WriteDirect writes a single message immediately without batching.
 func (d *DiskHandler) WriteDirect(msg string) {
+	util.Debug("[WRITE_DIRECT] Starting direct write (len=%d)", len(msg))
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -155,28 +175,32 @@ func (d *DiskHandler) WriteDirect(msg string) {
 
 	if d.file == nil {
 		if err := d.openSegment(); err != nil {
-			log.Printf("FATAL: failed to open segment: %v", err)
+			util.Fatal("failed to open segment: %v", err)
 			return
 		}
 	}
 
 	data := []byte(msg)
+	if len(data) > 0xFFFFFFFF {
+		log.Fatalf("ERROR: message too large to write: %d bytes", len(data))
+		return
+	}
 	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
-	totalLen := 4 + len(data)
+	totalLen := uint64(4 + len(data))
 
 	if d.CurrentOffset+totalLen > d.SegmentSize {
 		if err := d.rotateSegment(); err != nil {
-			log.Printf("FATAL: rotateSegment failed: %v", err)
+			util.Fatal("rotateSegment failed: %v", err)
 			return
 		}
 	}
 
 	if _, err := d.writer.Write(lenBuf[:]); err != nil {
-		log.Printf("ERROR: writeDirect failed writing length: %v", err)
+		util.Error("writeDirect failed writing length: %v", err)
 		return
 	}
 	if _, err := d.writer.Write(data); err != nil {
-		log.Printf("ERROR: writeDirect failed writing data: %v", err)
+		util.Error("writeDirect failed writing data: %v", err)
 		return
 	}
 
@@ -184,12 +208,12 @@ func (d *DiskHandler) WriteDirect(msg string) {
 	d.AbsoluteOffset++
 
 	if err := d.writer.Flush(); err != nil {
-		log.Printf("ERROR: flush failed in WriteDirect: %v", err)
+		util.Error("flush failed in WriteDirect: %v", err)
 	}
 
 	if d.file != nil {
 		if err := d.file.Sync(); err != nil {
-			log.Printf("ERROR: failed to sync disk file: %v", err)
+			util.Error("failed to sync disk file: %v", err)
 		}
 	}
 }
@@ -200,14 +224,14 @@ func (d *DiskHandler) rotateSegment() error {
 
 	if d.writer != nil {
 		if err := d.writer.Flush(); err != nil {
-			log.Printf("ERROR: flush failed during rotation: %v", err)
+			util.Error("flush failed during rotation: %v", err)
 			errs = append(errs, err)
 		}
 	}
 
 	if d.file != nil {
 		if err := d.file.Close(); err != nil {
-			log.Printf("ERROR: close failed during rotation: %v", err)
+			util.Error("close failed during rotation: %v", err)
 			errs = append(errs, err)
 		}
 	}
@@ -250,19 +274,19 @@ perform_write:
 
 	if d.writer != nil {
 		if err := d.writer.Flush(); err != nil {
-			log.Printf("ERROR: flush failed in Flush: %v", err)
+			util.Error("flush failed in Flush: %v", err)
 		}
 	}
 
 	if d.file != nil {
 		if err := d.file.Sync(); err != nil {
-			log.Printf("ERROR: failed to sync disk file: %v", err)
+			util.Error("failed to sync disk file: %v", err)
 		}
 	}
 }
 
 // GetAbsoluteOffset returns the current absolute offset in a thread-safe manner
-func (d *DiskHandler) GetAbsoluteOffset() int64 {
+func (d *DiskHandler) GetAbsoluteOffset() uint64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.AbsoluteOffset

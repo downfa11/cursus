@@ -2,7 +2,6 @@ package topic
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -57,25 +56,25 @@ func (tm *TopicManager) CreateTopic(name string, partitionCount int) *Topic {
 		current := len(existing.Partitions)
 		switch {
 		case partitionCount < current:
-			fmt.Printf("⚠️ cannot decrease partitions for topic '%s' (%d → %d)\n", name, current, partitionCount)
+			util.Error("⚠️ cannot decrease partitions for topic '%s' (%d → %d)\n", name, current, partitionCount)
 			return existing
 		case partitionCount > current:
 			existing.AddPartitions(partitionCount-current, tm.hp)
-			fmt.Printf("🔄 topic '%s' partitions increased: %d → %d\n", name, current, len(existing.Partitions))
+			util.Info("🔄 topic '%s' partitions increased: %d → %d\n", name, current, len(existing.Partitions))
 			return existing
 		default:
-			fmt.Printf("ℹ️ topic '%s' already exists with %d partitions\n", name, current)
+			util.Info("ℹ️ topic '%s' already exists with %d partitions\n", name, current)
 			return existing
 		}
 	}
 
-	t, err := NewTopic(name, partitionCount, tm.hp, tm.coordinator)
+	t, err := NewTopic(name, partitionCount, tm.hp, tm.coordinator, tm.cfg)
 	if err != nil {
-		fmt.Printf("❌ failed to create topic '%s': %v\n", name, err)
+		util.Error("❌ failed to create topic '%s': %v\n", name, err)
 		return nil
 	}
 	tm.topics[name] = t
-	fmt.Printf("✅ topic '%s' created with %d partitions\n", name, partitionCount)
+	util.Info("✅ topic '%s' created with %d partitions\n", name, partitionCount)
 	return t
 }
 
@@ -96,9 +95,14 @@ func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) erro
 }
 
 func (tm *TopicManager) publishInternal(topicName string, msg types.Message, requireAck bool) error {
+	util.Debug("[PUBLISH_INTERNAL] Starting publish. Topic: %s, RequireAck: %v, ProducerID: %s, SeqNum: %d",
+		topicName, requireAck, msg.ProducerID, msg.SeqNum)
+
+	start := time.Now()
+
 	// Idempotence (try to exactly-once)
-	if tm.cfg.EnableIdempotence && msg.ProducerID != "" && msg.SeqNum > 0 {
-		dedupKey := fmt.Sprintf("%s-%d", msg.ProducerID, msg.SeqNum)
+	if msg.ProducerID != "" && msg.SeqNum > 0 {
+		dedupKey := fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
 		msg.ID = util.GenerateID(dedupKey)
 	} else {
 		// at-least once
@@ -106,17 +110,19 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 		msg.ID = util.GenerateID(idSource)
 	}
 
+	util.Debug("[PUBLISH_INTERNAL] Generated message ID: %d", msg.ID)
+
 	now := time.Now()
 	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
-		if tm.cfg.EnableIdempotence {
-			log.Printf("[DEDUP] Duplicate message detected: ProducerID=%s, SeqNum=%d", msg.ProducerID, msg.SeqNum)
-		}
+		util.Info("Duplicate message detected: ProducerID=%s, SeqNum=%d", msg.ProducerID, msg.SeqNum)
 		return nil
 	}
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
+		util.Debug("[PUBLISH_INTERNAL] Topic '%s' not found, checking auto-create", topicName)
 		if tm.cfg.AutoCreateTopics {
+			util.Debug("[PUBLISH_INTERNAL] Auto-creating topic '%s'", topicName)
 			t = tm.CreateTopic(topicName, 4)
 			if t == nil {
 				return fmt.Errorf("failed to auto-create topic '%s'", topicName)
@@ -126,13 +132,17 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 		}
 	}
 
-	start := time.Now()
+	util.Debug("[PUBLISH_INTERNAL] Topic found/created. Partition count: %d", len(t.Partitions))
 
 	if requireAck {
+		util.Debug("[PUBLISH_INTERNAL] Calling t.PublishSync")
 		if err := t.PublishSync(msg); err != nil {
+			// Allow safe retry with same ProducerID+SeqNum
+			tm.dedupMap.Delete(msg.ID)
 			return fmt.Errorf("sync publish failed: %w", err)
 		}
 	} else {
+		util.Debug("[PUBLISH_INTERNAL] Calling t.Publish")
 		t.Publish(msg)
 	}
 
@@ -140,6 +150,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 	metrics.MessagesProcessed.Inc()
 	metrics.LatencyHist.Observe(elapsed)
 
+	util.Debug("[PUBLISH_INTERNAL] Publish completed successfully")
 	return nil
 }
 
