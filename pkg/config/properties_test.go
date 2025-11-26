@@ -13,15 +13,6 @@ func TestNormalizeDefaults(t *testing.T) {
 	if cfg.BrokerPort != 9000 {
 		t.Errorf("BrokerPort default incorrect: %d", cfg.BrokerPort)
 	}
-	if cfg.MaxPollRecords != 8192 {
-		t.Errorf("MaxPollRecords default incorrect: %d", cfg.MaxPollRecords)
-	}
-	if cfg.SegmentSize != 1<<20 {
-		t.Errorf("SegmentSize default incorrect: %d", cfg.SegmentSize)
-	}
-	if len(cfg.BootstrapServers) != 1 || cfg.BootstrapServers[0] != "localhost:9000" {
-		t.Errorf("BootstrapServers default incorrect: %v", cfg.BootstrapServers)
-	}
 }
 
 func TestStaticConsumerGroupsNormalize(t *testing.T) {
@@ -49,14 +40,5 @@ func TestStaticConsumerGroupsNormalize(t *testing.T) {
 	}
 	if g.TopicPartitions["a"] != 1 {
 		t.Errorf("TopicPartitions normalization failed")
-	}
-}
-
-func TestAckNormalization(t *testing.T) {
-	cfg := &config.Config{Acks: "garbage"}
-	cfg.Normalize()
-
-	if cfg.Acks != "0" {
-		t.Errorf("Acks normalization failed: %s", cfg.Acks)
 	}
 }

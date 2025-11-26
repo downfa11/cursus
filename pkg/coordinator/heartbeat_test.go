@@ -33,7 +33,7 @@ func TestHeartbeatMonitor_TimeoutRemovesMember(t *testing.T) {
 				},
 			},
 			cfg: &config.Config{
-				SessionTimeoutMS: 5000,
+				ConsumerSessionTimeoutMS: 5000,
 			},
 		},
 	}
@@ -41,7 +41,7 @@ func TestHeartbeatMonitor_TimeoutRemovesMember(t *testing.T) {
 	c.mu.Lock()
 	for groupName, group := range c.groups {
 		for memberID, member := range group.Members {
-			timeout := time.Duration(c.cfg.SessionTimeoutMS) * time.Millisecond
+			timeout := time.Duration(c.cfg.ConsumerSessionTimeoutMS) * time.Millisecond
 			if time.Since(member.LastHeartbeat) > timeout {
 				delete(group.Members, memberID)
 				c.triggerRebalance(groupName)

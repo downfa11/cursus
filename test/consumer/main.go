@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -33,8 +37,10 @@ type ConsumerConfig struct {
 	PollIntervalMS int `yaml:"poll_interval_ms" json:"poll_interval_ms"`
 
 	// Offset settings
-	AutoCommit           bool `yaml:"auto_commit" json:"auto_commit"`
-	AutoCommitIntervalMS int  `yaml:"auto_commit_interval_ms" json:"auto_commit_interval_ms"`
+	AutoCommit           bool   `yaml:"auto_commit" json:"auto_commit"`
+	AutoCommitIntervalMS int    `yaml:"auto_commit_interval_ms" json:"auto_commit_interval_ms"`
+	AutoOffsetReset      string `yaml:"auto_offset_reset" json:"auto_offset_reset"`
+	RebalanceTimeoutMS   int    `yaml:"rebalance_timeout_ms" json:"rebalance_timeout_ms"`
 
 	// Retry settings
 	MaxRetries     int `yaml:"max_retries" json:"max_retries"`
@@ -47,6 +53,14 @@ type ConsumerConfig struct {
 	DefaultPartitions []int `yaml:"default_partitions" json:"default_partitions"`
 	EmptyPollDelayMS  int   `yaml:"empty_poll_delay_ms" json:"empty_poll_delay_ms"`
 	PollTimeoutMS     int   `yaml:"poll_timeout_ms" json:"poll_timeout_ms"`
+
+	// TLS
+	UseTLS      bool   `yaml:"use_tls" json:"use_tls"`
+	TLSCertPath string `yaml:"tls_cert_path" json:"tls_cert_path"`
+	TLSKeyPath  string `yaml:"tls_key_path" json:"tls_key_path"`
+
+	// compression
+	EnableGzip bool `yaml:"enable_gzip" json:"enable_gzip"`
 }
 
 // Message represents a consumed message
@@ -102,14 +116,27 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 	flag.IntVar(&cfg.SessionTimeoutMS, "session-timeout-ms", 10000, "Session timeout in milliseconds")
 	flag.IntVar(&cfg.MaxPollRecords, "max-poll-records", 100, "Maximum records per poll")
 	flag.IntVar(&cfg.PollIntervalMS, "poll-interval-ms", 1000, "Poll interval in milliseconds")
+
 	flag.BoolVar(&cfg.AutoCommit, "auto-commit", true, "Enable auto commit")
 	flag.IntVar(&cfg.AutoCommitIntervalMS, "auto-commit-interval-ms", 5000, "Auto commit interval in milliseconds")
+	flag.StringVar(&cfg.AutoOffsetReset, "auto-offset-reset", "earliest", "Auto offset reset policy (earliest/latest)")
+
 	flag.IntVar(&cfg.MaxRetries, "max-retries", 3, "Maximum retry attempts")
 	flag.IntVar(&cfg.RetryBackoffMS, "retry-backoff-ms", 100, "Initial backoff time in milliseconds")
+
 	flag.IntVar(&cfg.JoinGroupMaxRetries, "join-group-max-retries", 10, "Maximum retry attempts for JOIN_GROUP")
 	flag.IntVar(&cfg.JoinGroupRetryDelayMS, "join-group-retry-delay-ms", 500, "Retry delay in milliseconds for JOIN_GROUP")
+
 	flag.IntVar(&cfg.EmptyPollDelayMS, "empty-poll-delay-ms", 50, "Delay when no messages available in milliseconds")
 	flag.IntVar(&cfg.PollTimeoutMS, "poll-timeout-ms", 5000, "Poll timeout in milliseconds")
+
+	flag.IntVar(&cfg.RebalanceTimeoutMS, "rebalance-timeout-ms", 60000, "Rebalance timeout")
+
+	flag.BoolVar(&cfg.UseTLS, "use-tls", false, "Enable TLS")
+	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS cert path")
+	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
+
+	flag.BoolVar(&cfg.EnableGzip, "enable-gzip", false, "Enable gzip")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
 	flag.Parse()
@@ -191,7 +218,48 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 		cfg.ConsumerID = fmt.Sprintf("consumer-%d", time.Now().UnixNano())
 	}
 
+	if cfg.AutoOffsetReset != "earliest" && cfg.AutoOffsetReset != "latest" {
+		cfg.AutoOffsetReset = "earliest"
+	}
+
+	if cfg.SessionTimeoutMS <= cfg.HeartbeatIntervalMS {
+		log.Printf("[WARN] SessionTimeoutMS (%d) must exceed HeartbeatIntervalMS (%d), adjusting to %d",
+			cfg.SessionTimeoutMS, cfg.HeartbeatIntervalMS, cfg.HeartbeatIntervalMS*10)
+		cfg.SessionTimeoutMS = cfg.HeartbeatIntervalMS * 10
+	}
+
+	if cfg.RebalanceTimeoutMS < cfg.SessionTimeoutMS {
+		cfg.RebalanceTimeoutMS = cfg.SessionTimeoutMS
+	}
+
+	// validate TLS config
+	if cfg.UseTLS && (cfg.TLSCertPath == "" || cfg.TLSKeyPath == "") {
+		return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
+	}
+
 	return cfg, nil
+}
+
+func (c *Consumer) dial() (net.Conn, error) {
+	if c.config.UseTLS {
+		if c.config.TLSCertPath == "" || c.config.TLSKeyPath == "" {
+			return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
+		}
+
+		cert, err := tls.LoadX509KeyPair(c.config.TLSCertPath, c.config.TLSKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("load TLS cert: %w", err)
+		}
+
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+
+		return tls.Dial("tcp", c.config.BrokerAddr, tlsConfig)
+	}
+
+	return net.Dial("tcp", c.config.BrokerAddr)
 }
 
 func NewConsumer(cfg *ConsumerConfig) (*Consumer, error) {
@@ -231,22 +299,27 @@ func NewConsumer(cfg *ConsumerConfig) (*Consumer, error) {
 	return consumer, nil
 }
 
-func WriteWithLength(conn net.Conn, data []byte) error {
+func (c *Consumer) WriteWithLength(conn net.Conn, data []byte) error {
+	compressed, err := CompressMessage(data, c.config.EnableGzip)
+	if err != nil {
+		return fmt.Errorf("compress: %w", err)
+	}
+
 	lenBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(compressed)))
 
 	if _, err := conn.Write(lenBuf); err != nil {
 		return fmt.Errorf("write length: %w", err)
 	}
 
-	if _, err := conn.Write(data); err != nil {
+	if _, err := conn.Write(compressed); err != nil {
 		return fmt.Errorf("write data: %w", err)
 	}
 
 	return nil
 }
 
-func ReadWithLength(conn net.Conn) ([]byte, error) {
+func (c *Consumer) ReadWithLength(conn net.Conn) ([]byte, error) {
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, fmt.Errorf("read length: %w", err)
@@ -259,7 +332,7 @@ func ReadWithLength(conn net.Conn) ([]byte, error) {
 		return nil, fmt.Errorf("read message: %w", err)
 	}
 
-	return msgBuf, nil
+	return DecompressMessage(msgBuf, c.config.EnableGzip)
 }
 
 func EncodeMessage(topic, payload string) []byte {
@@ -270,6 +343,36 @@ func EncodeMessage(topic, payload string) []byte {
 	copy(data[2:2+len(topicBytes)], topicBytes)
 	copy(data[2+len(topicBytes):], payloadBytes)
 	return data
+}
+
+func CompressMessage(data []byte, enableGzip bool) ([]byte, error) {
+	if !enableGzip {
+		return data, nil
+	}
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(data); err != nil {
+		return nil, err
+	}
+	if err := gw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func DecompressMessage(data []byte, enableGzip bool) ([]byte, error) {
+	if !enableGzip {
+		return data, nil
+	}
+
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer gr.Close()
+
+	return io.ReadAll(gr)
 }
 
 func (c *Consumer) startHeartbeat() {
@@ -289,19 +392,19 @@ func (c *Consumer) startHeartbeat() {
 }
 
 func (c *Consumer) sendHeartbeat() error {
-	conn, err := net.Dial("tcp", c.config.BrokerAddr)
+	conn, err := c.dial()
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	cmd := EncodeMessage("admin", fmt.Sprintf("HEARTBEAT %s %s", c.config.GroupID, c.config.ConsumerID))
-	if err := WriteWithLength(conn, cmd); err != nil {
+	cmd := EncodeMessage("admin", fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.config.ConsumerID))
+	if err := c.WriteWithLength(conn, cmd); err != nil {
 		return err
 	}
 
-	_, err = ReadWithLength(conn)
-	if err != nil && err != io.EOF && !strings.Contains(err.Error(), "EOF") {
+	_, err = c.ReadWithLength(conn)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	return nil
@@ -309,11 +412,17 @@ func (c *Consumer) sendHeartbeat() error {
 
 func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
 	var allMessages []Message
+	remainingQuota := c.config.MaxPollRecords
 
 	for _, partition := range c.config.Partitions {
-		offset := c.offsetManager.Get(partition)
+		if remainingQuota <= 0 {
+			break
+		}
 
-		messages, err := c.fetchMessages(partition, offset)
+		offset := c.offsetManager.Get(partition)
+		batchSize := remainingQuota
+
+		messages, err := c.fetchMessagesWithLimit(partition, offset, batchSize)
 		if err != nil {
 			continue
 		}
@@ -326,12 +435,7 @@ func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
 		}
 
 		allMessages = append(allMessages, messages...)
-
-		// auto commit
-		if c.config.AutoCommit && len(messages) > 0 {
-			lastOffset := messages[len(messages)-1].Offset
-			c.offsetManager.Commit(partition, lastOffset+1)
-		}
+		remainingQuota -= len(messages)
 	}
 
 	if c.config.AutoCommit && time.Since(c.lastCommitTime) >
@@ -347,8 +451,8 @@ func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
 	return allMessages, nil
 }
 
-func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
-	conn, err := net.Dial("tcp", c.config.BrokerAddr)
+func (c *Consumer) fetchMessagesWithLimit(partition, offset, maxMessages int) ([]Message, error) {
+	conn, err := c.dial()
 	if err != nil {
 		return nil, fmt.Errorf("connect to broker: %w", err)
 	}
@@ -359,20 +463,22 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 
-	consumeCmd := fmt.Sprintf("CONSUME %s %d %d", c.config.Topic, partition, offset)
+	autoOffsetReset := c.config.AutoOffsetReset
+	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s autoOffsetReset=%s",
+		c.config.Topic, partition, offset, c.config.GroupID, autoOffsetReset)
 	cmdBytes := EncodeMessage(c.config.Topic, consumeCmd)
 
-	if err := WriteWithLength(conn, cmdBytes); err != nil {
+	if err := c.WriteWithLength(conn, cmdBytes); err != nil {
 		return nil, fmt.Errorf("send consume command: %w", err)
 	}
 
 	var messages []Message
-	for i := 0; i < c.config.MaxPollRecords; i++ {
+	for i := 0; i < maxMessages; i++ {
 		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 			return messages, fmt.Errorf("reset read deadline: %w", err)
 		}
 
-		msgBytes, err := ReadWithLength(conn)
+		msgBytes, err := c.ReadWithLength(conn)
 		if err != nil {
 			if err == io.EOF || strings.Contains(err.Error(), "EOF") {
 				break
@@ -399,7 +505,7 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 
 func (c *Consumer) commitOffsets() {
 	for _, partition := range c.config.Partitions {
-		conn, err := net.Dial("tcp", c.config.BrokerAddr)
+		conn, err := c.dial()
 		if err != nil {
 			log.Printf("Failed to connect for offset commit partition %d: %v", partition, err)
 			continue
@@ -407,16 +513,16 @@ func (c *Consumer) commitOffsets() {
 
 		offset := c.offsetManager.Get(partition)
 		commitCmd := EncodeMessage("admin",
-			fmt.Sprintf("COMMIT_OFFSET %s %d %d", c.config.Topic, partition, offset))
+			fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d", c.config.Topic, partition, c.config.GroupID, offset))
 
-		if err := WriteWithLength(conn, commitCmd); err != nil {
+		if err := c.WriteWithLength(conn, commitCmd); err != nil {
 			log.Printf("Failed to commit offset for partition %d: %v", partition, err)
 			conn.Close()
 			continue
 		}
 
-		_, err = ReadWithLength(conn)
-		if err != nil && err != io.EOF && !strings.Contains(err.Error(), "EOF") {
+		_, err = c.ReadWithLength(conn)
+		if err != nil && !errors.Is(err, io.EOF) {
 			log.Printf("Failed to read commit response for partition %d: %v", partition, err)
 		}
 
@@ -447,25 +553,25 @@ func (c *Consumer) joinGroup() error {
 		retryDelay = time.Duration(c.config.JoinGroupRetryDelayMS) * time.Millisecond
 	}
 
-	conn1, err := net.Dial("tcp", c.config.BrokerAddr)
+	conn1, err := c.dial()
 	if err != nil {
 		return fmt.Errorf("connect to broker: %w", err)
 	}
 	defer conn1.Close()
 
-	setGroupCmd := EncodeMessage(c.config.Topic, fmt.Sprintf("SETGROUP %s", c.config.GroupID))
-	if err := WriteWithLength(conn1, setGroupCmd); err != nil {
+	setGroupCmd := EncodeMessage(c.config.Topic, fmt.Sprintf("SETGROUP group=%s", c.config.GroupID))
+	if err := c.WriteWithLength(conn1, setGroupCmd); err != nil {
 		return fmt.Errorf("send setgroup command: %w", err)
 	}
 
-	resp1, err := ReadWithLength(conn1)
+	resp1, err := c.ReadWithLength(conn1)
 	if err != nil {
 		return fmt.Errorf("read setgroup response: %w", err)
 	}
 	log.Printf("Consumer group set to '%s' '%s'", c.config.GroupID, resp1)
 	// REGISTER_GROUP
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		conn2, err := net.Dial("tcp", c.config.BrokerAddr)
+		conn2, err := c.dial()
 		if err != nil {
 			if attempt < maxRetries {
 				time.Sleep(retryDelay)
@@ -475,8 +581,8 @@ func (c *Consumer) joinGroup() error {
 			return fmt.Errorf("connect to broker: %w", err)
 		}
 
-		registerCmd := EncodeMessage("admin", fmt.Sprintf("REGISTER_GROUP %s %s", c.config.Topic, c.config.GroupID))
-		if err := WriteWithLength(conn2, registerCmd); err != nil {
+		registerCmd := EncodeMessage("admin", fmt.Sprintf("REGISTER_GROUP topic=%s group=%s", c.config.Topic, c.config.GroupID))
+		if err := c.WriteWithLength(conn2, registerCmd); err != nil {
 			conn2.Close()
 			if attempt < maxRetries {
 				time.Sleep(retryDelay)
@@ -486,7 +592,7 @@ func (c *Consumer) joinGroup() error {
 			return fmt.Errorf("send register_group command: %w", err)
 		}
 
-		resp2, err := ReadWithLength(conn2)
+		resp2, err := c.ReadWithLength(conn2)
 		conn2.Close()
 
 		if err != nil {
@@ -518,7 +624,7 @@ func (c *Consumer) joinGroup() error {
 
 	// JOIN_GROUP
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		conn3, err := net.Dial("tcp", c.config.BrokerAddr)
+		conn3, err := c.dial()
 		if err != nil {
 			if attempt < maxRetries {
 				time.Sleep(retryDelay)
@@ -528,8 +634,8 @@ func (c *Consumer) joinGroup() error {
 			return fmt.Errorf("connect to broker: %w", err)
 		}
 
-		joinCmd := EncodeMessage("admin", fmt.Sprintf("JOIN_GROUP %s %s", c.config.GroupID, c.config.ConsumerID))
-		if err := WriteWithLength(conn3, joinCmd); err != nil {
+		joinCmd := EncodeMessage("admin", fmt.Sprintf("JOIN_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.config.ConsumerID))
+		if err := c.WriteWithLength(conn3, joinCmd); err != nil {
 			conn3.Close()
 			if attempt < maxRetries {
 				time.Sleep(retryDelay)
@@ -539,7 +645,7 @@ func (c *Consumer) joinGroup() error {
 			return fmt.Errorf("send join_group command: %w", err)
 		}
 
-		resp3, err := ReadWithLength(conn3)
+		resp3, err := c.ReadWithLength(conn3)
 		conn3.Close()
 
 		if err != nil {

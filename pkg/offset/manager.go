@@ -7,18 +7,17 @@ import (
 
 type OffsetManager struct {
 	mu      sync.RWMutex
-	offsets map[string]map[string]map[int]int64 // groupID -> topic -> partition -> offset
+	offsets map[string]map[string]map[int]uint64 // groupID -> topic -> partition -> offset
 }
 
-// NewOffsetManager initializes the offset manager.
 func NewOffsetManager() *OffsetManager {
 	return &OffsetManager{
-		offsets: make(map[string]map[string]map[int]int64),
+		offsets: make(map[string]map[string]map[int]uint64),
 	}
 }
 
 // GetOffset returns the stored offset for a given group/topic/partition.
-func (om *OffsetManager) GetOffset(groupID, topic string, partition int) (int64, error) {
+func (om *OffsetManager) GetOffset(groupID, topic string, partition int) (uint64, error) {
 	om.mu.RLock()
 	defer om.mu.RUnlock()
 
@@ -29,19 +28,19 @@ func (om *OffsetManager) GetOffset(groupID, topic string, partition int) (int64,
 			}
 		}
 	}
-	return -1, fmt.Errorf("no offset found")
+	return 0, fmt.Errorf("no offset found for group '%s', topic '%s', partition %d", groupID, topic, partition)
 }
 
 // CommitOffset saves the offset for a given group/topic/partition.
-func (om *OffsetManager) CommitOffset(groupID, topic string, partition int, offset int64) error {
+func (om *OffsetManager) CommitOffset(groupID, topic string, partition int, offset uint64) error {
 	om.mu.Lock()
 	defer om.mu.Unlock()
 
 	if _, ok := om.offsets[groupID]; !ok {
-		om.offsets[groupID] = make(map[string]map[int]int64)
+		om.offsets[groupID] = make(map[string]map[int]uint64)
 	}
 	if _, ok := om.offsets[groupID][topic]; !ok {
-		om.offsets[groupID][topic] = make(map[int]int64)
+		om.offsets[groupID][topic] = make(map[int]uint64)
 	}
 	om.offsets[groupID][topic][partition] = offset
 	return nil

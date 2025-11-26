@@ -3,8 +3,6 @@ cleanup_interval: 60
 enable_exporter: true  
 exporter_port: 9100  
 use_tls: false  
-tls_cert_path: "certs/server.crt"  
-tls_key_path: "certs/server.key"  
 enable_gzip: false  
-channel_buffer_size: 10000   
-auto_offset_reset: "earliest"
+channel_buffer_size: 10000
+log_level: "info"

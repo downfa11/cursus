@@ -7,9 +7,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
+
+const DefaultBufSize = 10000
+const DefaultConsumerBufSize = 1000
 
 // Topic represents a logical message stream divided into partitions and consumer groups.
 type Topic struct {
@@ -19,6 +23,7 @@ type Topic struct {
 	consumerGroups map[string]*types.ConsumerGroup
 	coordinator    Coordinator
 	mu             sync.RWMutex
+	cfg            *config.Config
 }
 
 // Partition handles messages for one shard of a topic.
@@ -45,29 +50,35 @@ type DiskAppender interface {
 }
 
 // NewTopic initializes a topic with partitions.
-func NewTopic(name string, partitionCount int, hp HandlerProvider, coordinator Coordinator) (*Topic, error) {
+func NewTopic(name string, partitionCount int, hp HandlerProvider, coordinator Coordinator, cfg *config.Config) (*Topic, error) {
 	partitions := make([]*Partition, partitionCount)
 	for i := 0; i < partitionCount; i++ {
 		dh, err := hp.GetHandler(name, i)
 		if err != nil {
 			return nil, fmt.Errorf("open handler for %s[%d]: %w", name, i, err)
 		}
-		partitions[i] = NewPartition(i, name, dh)
+		partitions[i] = NewPartition(i, name, dh, cfg)
 	}
 	return &Topic{
 		Name:           name,
 		Partitions:     partitions,
 		consumerGroups: make(map[string]*types.ConsumerGroup),
 		coordinator:    coordinator,
+		cfg:            cfg,
 	}, nil
 }
 
 // NewPartition creates a partition instance.
-func NewPartition(id int, topic string, dh interface{}) *Partition {
+func NewPartition(id int, topic string, dh interface{}, cfg *config.Config) *Partition {
+	bufSize := DefaultBufSize
+	if cfg != nil && cfg.PartitionChannelBufSize > 0 {
+		bufSize = cfg.PartitionChannelBufSize
+	}
+
 	p := &Partition{
 		id:    id,
 		topic: topic,
-		ch:    make(chan types.Message, 10000),
+		ch:    make(chan types.Message, bufSize),
 		subs:  make(map[string]chan types.Message),
 		dh:    dh,
 	}
@@ -100,10 +111,10 @@ func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 		idx := len(t.Partitions)
 		dh, err := hp.GetHandler(t.Name, idx)
 		if err != nil {
-			fmt.Printf("❌ failed to attach partition %d for topic '%s': %v\n", idx, t.Name, err)
+			util.Error("❌ failed to attach partition %d for topic '%s': %v\n", idx, t.Name, err)
 			return
 		}
-		newP := NewPartition(idx, t.Name, dh)
+		newP := NewPartition(idx, t.Name, dh, t.cfg)
 		t.Partitions = append(t.Partitions, newP)
 	}
 }
@@ -113,18 +124,23 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *type
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	consumerBufSize := DefaultConsumerBufSize
+	if t.cfg != nil && t.cfg.ConsumerChannelBufSize > 0 {
+		consumerBufSize = t.cfg.ConsumerChannelBufSize
+	}
+
 	if g, ok := t.consumerGroups[groupName]; ok {
 		newConsumerID := len(g.Consumers)
 		newConsumer := &types.Consumer{
 			ID:     newConsumerID,
-			MsgCh:  make(chan types.Message, 1000),
+			MsgCh:  make(chan types.Message, consumerBufSize),
 			StopCh: make(chan struct{}),
 		}
 		g.Consumers = append(g.Consumers, newConsumer)
 
 		if t.coordinator != nil {
 			if assignments, err := t.coordinator.AddConsumer(groupName, fmt.Sprintf("%d", newConsumerID)); err != nil {
-				fmt.Printf("❌ failed to add consumer %d: %v\n", newConsumerID, err)
+				util.Error("❌ failed to add consumer %d: %v\n", newConsumerID, err)
 			} else {
 				assignmentMap := map[string][]int{
 					fmt.Sprintf("%d", newConsumerID): assignments,
@@ -138,27 +154,27 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *type
 	group := &types.ConsumerGroup{
 		Name:             groupName,
 		Consumers:        make([]*types.Consumer, consumerCount),
-		CommittedOffsets: make(map[int]int64),
+		CommittedOffsets: make(map[int]uint64),
 	}
 
 	for i := 0; i < consumerCount; i++ {
 		group.Consumers[i] = &types.Consumer{
 			ID:     i,
-			MsgCh:  make(chan types.Message, 1000),
+			MsgCh:  make(chan types.Message, consumerBufSize),
 			StopCh: make(chan struct{}),
 		}
 	}
 
 	if t.coordinator != nil {
 		if err := t.coordinator.RegisterGroup(t.Name, groupName, len(t.Partitions)); err != nil {
-			fmt.Printf("❌ failed to register group with coordinator: %v\n", err)
+			util.Error("❌ failed to register group with coordinator: %v\n", err)
 			return nil
 		}
 
 		for i := 0; i < consumerCount; i++ {
 			_, err := t.coordinator.AddConsumer(groupName, fmt.Sprintf("%d", i))
 			if err != nil {
-				fmt.Printf("❌ failed to add consumer %d: %v\n", i, err)
+				util.Error("❌ failed to add consumer %d: %v\n", i, err)
 			}
 		}
 
@@ -180,7 +196,7 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *type
 	}
 
 	t.consumerGroups[groupName] = group
-	fmt.Printf("👥 registered consumer group '%s' with %d consumers on topic '%s'\n",
+	util.Info("👥 registered consumer group '%s' with %d consumers on topic '%s'\n",
 		groupName, consumerCount, t.Name)
 	return group
 }
@@ -189,12 +205,15 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *type
 func (t *Topic) Publish(msg types.Message) {
 	var idx int
 	t.mu.Lock()
+
 	if msg.Key != "" {
 		keyID := util.GenerateID(msg.Key)
 		idx = int(keyID % uint64(len(t.Partitions)))
+		util.Debug("Key-based routing to partition %d", idx)
 	} else {
 		idx = int(t.counter % uint64(len(t.Partitions)))
 		t.counter++
+		util.Debug("Round-robin routing to partition %d (counter: %d)", idx, t.counter)
 	}
 	t.mu.Unlock()
 
@@ -205,17 +224,24 @@ func (t *Topic) Publish(msg types.Message) {
 func (t *Topic) PublishSync(msg types.Message) error {
 	var idx int
 	t.mu.Lock()
+	util.Debug("[TOPIC_PUBLISH_SYNC] Starting sync publish. Topic: %s, Key: %s", t.Name, msg.Key)
+
 	if msg.Key != "" {
 		keyID := util.GenerateID(msg.Key)
 		idx = int(keyID % uint64(len(t.Partitions)))
+		util.Debug("[TOPIC_PUBLISH_SYNC] Key-based routing to partition %d", idx)
 	} else {
 		idx = int(t.counter % uint64(len(t.Partitions)))
 		t.counter++
+		util.Debug("[TOPIC_PUBLISH_SYNC] Round-robin routing to partition %d", idx)
 	}
 	t.mu.Unlock()
 
+	util.Debug("[TOPIC_PUBLISH_SYNC] Calling Partition[%d].EnqueueSync", idx)
 	p := t.Partitions[idx]
-	return p.EnqueueSync(msg)
+	err := p.EnqueueSync(msg)
+	util.Debug("[TOPIC_PUBLISH_SYNC] EnqueueSync completed with error: %v", err)
+	return err
 }
 
 // Consume retrieves a consumer's channel.
@@ -234,18 +260,23 @@ func (p *Partition) Enqueue(msg types.Message) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closed {
+		util.Debug("⚠️ Partition closed, dropping message [partition-%d]", p.id)
 		return
 	}
 
+	util.Debug("Enqueueing message to in-memory channel [partition-%d]", p.id)
 	p.ch <- msg
 	if appender, ok := p.dh.(DiskAppender); ok {
+		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
 		appender.AppendMessage(msg.Payload)
 	} else {
-		fmt.Printf("⚠️ Partition %d: DiskHandler does not implement AppendMessage\n", p.id)
+		util.Debug("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
 	}
 }
 
 func (p *Partition) EnqueueSync(msg types.Message) error {
+	util.Debug("EnqueueSync called [partition-%d]", p.id)
+
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closed {
@@ -253,6 +284,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	}
 
 	// send to In-memory
+	util.Debug("Sending to in-memory channel [partition-%d]", p.id)
 	select {
 	case p.ch <- msg:
 	case <-time.After(5 * time.Second):
@@ -260,6 +292,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	}
 
 	// write sync to disk
+	util.Debug("Calling AppendMessageSync [partition-%d]", p.id)
 	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
 		if err := appender.AppendMessageSync(msg.Payload); err != nil {
 			return fmt.Errorf("disk write failed: %w", err)
@@ -268,6 +301,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 		return fmt.Errorf("disk handler does not support sync write")
 	}
 
+	util.Debug("EnqueueSync completed successfully [partition-%d]", p.id)
 	return nil
 }
 
@@ -281,7 +315,7 @@ func (p *Partition) RegisterGroup(groupName string) chan types.Message {
 	if ch, ok := p.subs[groupName]; ok {
 		return ch
 	}
-	ch := make(chan types.Message, 10000)
+	ch := make(chan types.Message, DefaultBufSize)
 	p.subs[groupName] = ch
 	return ch
 }
@@ -350,7 +384,7 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 	}
 }
 
-func (t *Topic) GetCommittedOffset(groupName string, partition int) (int64, bool) {
+func (t *Topic) GetCommittedOffset(groupName string, partition int) (uint64, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -363,7 +397,7 @@ func (t *Topic) GetCommittedOffset(groupName string, partition int) (int64, bool
 	return offset, ok
 }
 
-func (t *Topic) CommitOffset(groupName string, partition int, offset int64) error {
+func (t *Topic) CommitOffset(groupName string, partition int, offset uint64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -377,7 +411,7 @@ func (t *Topic) CommitOffset(groupName string, partition int, offset int64) erro
 	}
 
 	if group.CommittedOffsets == nil {
-		group.CommittedOffsets = make(map[int]int64)
+		group.CommittedOffsets = make(map[int]uint64)
 	}
 	group.CommittedOffsets[partition] = offset
 	return nil

@@ -7,10 +7,10 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 
+	"github.com/downfa11-org/go-broker/util"
 	"golang.org/x/sys/unix"
 )
 
@@ -56,7 +56,7 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 	sysConn, ok := conn.(*net.TCPConn)
 	if !ok {
 		if _, err := d.file.Seek(0, 0); err != nil {
-			log.Printf("ERROR: Seek failed: %v", err)
+			util.Error("Seek failed: %v", err)
 			return err
 		}
 		_, err := io.Copy(conn, d.file)
@@ -83,7 +83,7 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 			}
 		}
 	}); err != nil {
-		log.Printf("ERROR: rawConn.Control failed: %v", err)
+		util.Error("rawConn.Control failed: %v", err)
 		return fmt.Errorf("rawConn.Control: %w", err)
 	}
 	return sendErr

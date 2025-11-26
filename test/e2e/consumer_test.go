@@ -1,7 +1,9 @@
 package e2e
 
 import (
+	"fmt"
 	"testing"
+	"time"
 )
 
 // TestConsumerGroupJoin verifies consumer group join functionality
@@ -14,12 +16,14 @@ func TestConsumerGroupJoin(t *testing.T) {
 		WithNumMessages(10).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
 }
 
+// TestWithDefaultConsumerGroup verifies default consumer group behavior
 func TestWithDefaultConsumerGroup(t *testing.T) {
 	ctx := Given(t)
 	defer ctx.Cleanup()
@@ -30,12 +34,14 @@ func TestWithDefaultConsumerGroup(t *testing.T) {
 		WithNumMessages(10).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
 }
 
+// TestWithCustomConsumerGroup verifies custom consumer group behavior
 func TestWithCustomConsumerGroup(t *testing.T) {
 	ctx := Given(t)
 	defer ctx.Cleanup()
@@ -46,35 +52,41 @@ func TestWithCustomConsumerGroup(t *testing.T) {
 		WithNumMessages(10).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
 }
 
+// TestDefaultGroupOffsetSharing verifies offset sharing between consumers in same group
 func TestDefaultGroupOffsetSharing(t *testing.T) {
+	// First consumer reads all messages
 	ctx1 := Given(t)
 	defer ctx1.Cleanup()
 
+	sharedGroup := fmt.Sprintf("shared-group-%d", time.Now().UnixNano())
+
 	ctx1.WithTopic("shared-topic").
-		WithDefaultConsumerGroup().
 		WithPartitions(1).
 		WithNumMessages(10).
+		WithConsumerGroup(sharedGroup).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
 
+	// Second consumer in same group should see no new messages
 	ctx2 := Given(t)
 	defer ctx2.Cleanup()
 
 	ctx2.WithTopic("shared-topic").
-		WithDefaultConsumerGroup().
 		WithPartitions(1).
+		WithConsumerGroup(sharedGroup).
 		When().
-		StartBroker().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(0))
@@ -90,6 +102,7 @@ func TestConsumerOffsetCommit(t *testing.T) {
 		WithNumMessages(10).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		ConsumeMessages().
 		Then().
@@ -106,6 +119,7 @@ func TestConsumerHeartbeat(t *testing.T) {
 		WithNumMessages(5).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		ConsumeMessages().
 		Then().

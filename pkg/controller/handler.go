@@ -1,8 +1,8 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -31,7 +31,7 @@ type CommandHandler struct {
 type ConsumeArgs struct {
 	Topic     string
 	Partition int
-	Offset    int
+	Offset    uint64
 }
 
 func NewCommandHandler(tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager, cd *coordinator.Coordinator) *CommandHandler {
@@ -51,26 +51,52 @@ func (ch *CommandHandler) logCommandResult(cmd, response string) {
 	}
 
 	cleanResponse := strings.ReplaceAll(response, "\n", " ")
-	log.Printf("%s | Command: [%s] | Response: %s", status, cmd, cleanResponse)
+	util.Debug("%s - [%s] to Response [%s]", status, cmd, cleanResponse)
 }
 
 // HandleConsumeCommand is responsible for parsing the CONSUME command and streaming messages.
 func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx *ClientContext) (int, error) {
-	// Parse CONSUME <topic> <partition> <offset>
-	parts := strings.Fields(rawCmd)
-	if len(parts) != 4 {
-		return 0, fmt.Errorf("invalid CONSUME syntax. Expected: CONSUME <topic> <partition> <offset>")
+	// CONSUME topic=<name> partition=<N> offset=<N> group=<name> [autoOffsetReset=<earliest|latest>]
+	args := parseKeyValueArgs(rawCmd[8:])
+
+	topicName, ok := args["topic"]
+	if !ok || topicName == "" {
+		return 0, fmt.Errorf("missing topic parameter")
 	}
 
-	topicName := parts[1]
-	partition, err := strconv.Atoi(parts[2])
+	partitionStr, ok := args["partition"]
+	if !ok {
+		return 0, fmt.Errorf("missing partition parameter")
+	}
+	partition, err := strconv.Atoi(partitionStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid partition ID: %w", err)
 	}
-	requestedOffset, err := strconv.Atoi(parts[3])
+
+	offsetStr, ok := args["offset"]
+	if !ok {
+		return 0, fmt.Errorf("missing offset parameter")
+	}
+	requestedOffset, err := strconv.ParseUint(offsetStr, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid offset: %w", err)
 	}
+
+	groupName := args["group"]
+	if groupName == "" || groupName == "-" {
+		groupName = "default-group"
+		util.Info("Using default consumer group for topic '%s' partition %d", topicName, partition)
+	}
+	ctx.ConsumerGroup = groupName
+
+	autoOffsetReset := args["autoOffsetReset"]
+	if autoOffsetReset == "" {
+		autoOffsetReset = "earliest"
+	}
+	autoOffsetReset = strings.ToLower(autoOffsetReset)
+
+	util.Debug("Parsed command: topic=%s, partition=%d, offset=%d, group=%s, autoOffsetReset=%s",
+		topicName, partition, requestedOffset, groupName, autoOffsetReset)
 
 	t := ch.TopicManager.GetTopic(topicName)
 	if t == nil {
@@ -79,62 +105,59 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 
 	dh, err := ch.DiskManager.GetHandler(topicName, partition)
 	if err != nil {
+		util.Error("Failed to get disk handler: %v", err)
 		return 0, fmt.Errorf("failed to get disk handler: %w", err)
 	}
 
 	startTime := time.Now()
-
 	actualOffset := requestedOffset
-	log.Printf("Requested offset: %d for group '%s'", requestedOffset, ctx.ConsumerGroup)
+	util.Debug("Requested offset: %d for group '%s'", requestedOffset, ctx.ConsumerGroup)
 
-	// check consumer group's committed offset
-	if requestedOffset == -1 || requestedOffset == 0 {
-		log.Printf("Checking consumer group '%s' committed offset for topic '%s' partition %d",
-			ctx.ConsumerGroup, topicName, partition)
+	if requestedOffset == 0 {
+		util.Debug("Requested offset is 0 (earliest), checking saved offset for group '%s'", groupName)
 
-		if committedOffset, ok := t.GetCommittedOffset(ctx.ConsumerGroup, partition); ok {
-			actualOffset = int(committedOffset)
-			log.Printf("[OFFSET] Using consumer group committed offset %d for group '%s', topic '%s', partition %d",
-				actualOffset, ctx.ConsumerGroup, topicName, partition)
-		} else {
-			if ch.OffsetManager != nil {
-				savedOffset, err := ch.OffsetManager.GetOffset(ctx.ConsumerGroup, topicName, partition)
-				if err == nil && savedOffset >= 0 {
-					actualOffset = int(savedOffset)
-					log.Printf("[OFFSET] Using OffsetManager saved offset %d for group '%s', topic '%s', partition %d",
-						actualOffset, ctx.ConsumerGroup, topicName, partition)
-				} else {
-					log.Printf("[WARN] Failed to get saved offset, falling back to auto offset: %v", err)
-					actualOffset, err = ch.resolveAutoOffset(dh, ctx.ConsumerGroup)
-					if err != nil {
-						return 0, err
-					}
-					log.Printf("[OFFSET] Fallback offset applied: %d for group '%s'", actualOffset, ctx.ConsumerGroup)
-				}
+		if committedOffset, ok := t.GetCommittedOffset(groupName, partition); ok {
+			actualOffset = committedOffset
+			util.Debug("Using topic committed offset %d for group '%s'", actualOffset, groupName)
+		} else if ch.OffsetManager != nil {
+			savedOffset, err := ch.OffsetManager.GetOffset(groupName, topicName, partition)
+			if err == nil {
+				actualOffset = savedOffset
+				util.Debug("Using OffsetManager saved offset %d for group '%s'", actualOffset, groupName)
 			} else {
-				log.Printf("[WARN] OffsetManager is nil, using auto offset for group '%s'", ctx.ConsumerGroup)
-				actualOffset, err = ch.resolveAutoOffset(dh, ctx.ConsumerGroup)
-				if err != nil {
-					return 0, err
+				util.Debug("No saved offset found, applying autoOffsetReset=%s for group '%s'", autoOffsetReset, groupName)
+				if autoOffsetReset == "latest" {
+					actualOffset, _ = dh.GetLatestOffset()
+					util.Debug("Using latest offset %d for group '%s'", actualOffset, groupName)
+				} else {
+					actualOffset = 0
+					util.Debug("Using earliest offset 0 for group '%s'", groupName)
 				}
-				log.Printf("[OFFSET] Fallback offset applied: %d for group '%s'", actualOffset, ctx.ConsumerGroup)
+			}
+		} else {
+			util.Debug("OffsetManager is nil, applying autoOffsetReset=%s for group '%s'", autoOffsetReset, groupName)
+			if autoOffsetReset == "latest" {
+				actualOffset, _ = dh.GetLatestOffset()
+				util.Debug("Using latest offset %d for group '%s'", actualOffset, groupName)
+			} else {
+				actualOffset = 0
+				util.Debug("Using earliest offset 0 for group '%s'", groupName)
 			}
 		}
 	} else {
-		log.Printf("Requested offset is specified: %d for group '%s'", requestedOffset, ctx.ConsumerGroup)
-		log.Printf("Using requested offset as actual offset: %d for group '%s'", actualOffset, ctx.ConsumerGroup)
+		util.Debug("Using explicitly requested offset %d for group '%s'", requestedOffset, groupName)
 	}
 
 	maxMessages := DefaultMaxPollRecords
-	if ch.Config != nil && ch.Config.MaxPollRecords > 0 {
-		maxMessages = ch.Config.MaxPollRecords
-	}
-	log.Printf("Max messages to fetch: %d", maxMessages)
+	util.Debug("Max messages to fetch: %d", maxMessages)
 
 	messages, err := dh.ReadMessages(actualOffset, maxMessages)
 	if err != nil {
+		util.Error("Failed to read messages: %v", err)
 		return 0, fmt.Errorf("failed to read messages from disk: %w", err)
 	}
+
+	util.Debug("Read %d messages from disk", len(messages))
 
 	streamedCount := 0
 	lastOffset := actualOffset
@@ -148,50 +171,28 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	}
 
 	if streamedCount > 0 {
-		if err := t.CommitOffset(ctx.ConsumerGroup, partition, int64(lastOffset)); err != nil {
-			log.Printf("[OFFSET_WARN] Failed to commit offset to topic for group '%s': %v", ctx.ConsumerGroup, err)
+		if err := t.CommitOffset(ctx.ConsumerGroup, partition, lastOffset); err != nil {
+			util.Warn("Failed to commit offset to topic for group '%s': %v", ctx.ConsumerGroup, err)
 		} else {
-			log.Printf("[OFFSET] Successfully committed offset %d to topic for group '%s', topic '%s', partition %d",
+			util.Debug("[OFFSET] Successfully committed offset %d to topic for group '%s', topic '%s', partition %d",
 				lastOffset, ctx.ConsumerGroup, topicName, partition)
 		}
 
 		if ch.OffsetManager != nil {
-			if err := ch.OffsetManager.CommitOffset(ctx.ConsumerGroup, topicName, partition, int64(lastOffset)); err != nil {
-				log.Printf("[OFFSET_WARN] Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
+			if err := ch.OffsetManager.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
+				util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
 			} else {
-				log.Printf("[OFFSET] Successfully committed offset %d to OffsetManager for group '%s', topic '%s', partition %d",
+				util.Debug("[OFFSET] Successfully committed offset %d to OffsetManager for group '%s', topic '%s', partition %d",
 					lastOffset, ctx.ConsumerGroup, topicName, partition)
 			}
 		}
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("[METRICS] Streamed %d messages from topic '%s' partition %d in %v",
+	util.Debug("[METRICS] Streamed %d messages from topic '%s' partition %d in %v",
 		streamedCount, topicName, partition, duration)
 
 	return streamedCount, nil
-}
-
-// resolveAutoOffset applies the auto.offset.reset policy to determine the starting offset
-func (ch *CommandHandler) resolveAutoOffset(dh *disk.DiskHandler, groupName string) (int, error) {
-	if ch.Config != nil && ch.Config.AutoOffsetReset == "earliest" {
-		log.Printf("[OFFSET] Using 'earliest' (0) for group '%s'", groupName)
-		return 0, nil
-	}
-	if ch.Config == nil {
-		log.Printf("[WARN] Config is nil, defaulting auto.offset.reset to 'latest' for group '%s'", groupName)
-	} else if ch.Config.AutoOffsetReset != "latest" {
-		log.Printf("[WARN] Unknown auto.offset.reset '%s', defaulting to 'latest' for group '%s'",
-			ch.Config.AutoOffsetReset, groupName)
-	}
-
-	// "latest"
-	latestOffset, err := dh.GetLatestOffset()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get latest offset: %w", err)
-	}
-	log.Printf("[OFFSET] Using 'latest' (%d) for group '%s'", latestOffset, groupName)
-	return latestOffset, nil
 }
 
 // HandleCommand processes non-streaming commands and returns a signal for streaming commands.
@@ -204,9 +205,9 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 	}
 
 	if strings.HasPrefix(strings.ToUpper(cmd), "CONSUME ") {
-		parts := strings.Fields(cmd)
-		if len(parts) != 4 {
-			resp := "ERROR: invalid CONSUME syntax. Expected: CONSUME <topic> <partition> <offset>"
+		args := parseKeyValueArgs(cmd[8:])
+		if args["topic"] == "" || args["partition"] == "" || args["offset"] == "" {
+			resp := "ERROR: invalid CONSUME syntax. Expected: CONSUME topic=<name> partition=<N> offset=<N> group=<name> [autoOffsetReset=<earliest|latest>]"
 			ch.logCommandResult(rawCmd, resp)
 			return resp
 		}
@@ -218,31 +219,36 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 
 	switch {
 	case strings.EqualFold(cmd, "HELP"):
-		resp = `Available commands:  
-  SETGROUP <group-name>          - set consumer group name  
-  CREATE <topic> [<partitions>]  - create topic (default=4)  
-  DELETE <topic>                 - delete topic  
-  LIST                           - list all topics  
-  SUBSCRIBE <topic> [<group>]    - subscribe to an existing topic (default group: "default")  
-  PUBLISH <topic> <message>      - publish a message  
-  CONSUME <topic> <pID> <offset> - consume messages (streaming)  
-  JOIN_GROUP <group> <consumer>  - join consumer group and get partition assignments  
-  LEAVE_GROUP <group> <consumer> - leave consumer group  
-  HEARTBEAT <group> <consumer>   - send heartbeat to coordinator  
-  COMMIT_OFFSET <topic> <p> <o>  - commit offset for partition  
-  HELP                           - show this help message  
-  EXIT                           - exit`
+		resp = `Available commands:      
+  SETGROUP group=<name>                                    - set consumer group name      
+  CREATE topic=<name> [partitions=<N>]                     - create topic (default=4)      
+  DELETE topic=<name>                                      - delete topic      
+  LIST                                                     - list all topics      
+  SUBSCRIBE topic=<name> [group=<name>]                    - subscribe to topic      
+  PUBLISH topic=<name> acks=<0|1> message=<text> [producerId=<id> seqNum=<N> epoch=<N>] - publish message      
+  CONSUME topic=<name> partition=<N> offset=<N> group=<name> [autoOffsetReset=<earliest|latest>] - consume messages      
+  JOIN_GROUP group=<name> consumer=<id>                    - join consumer group      
+  LEAVE_GROUP group=<name> consumer=<id>                   - leave consumer group      
+  HEARTBEAT group=<name> consumer=<id>                     - send heartbeat      
+  COMMIT_OFFSET topic=<name> partition=<N> group=<name> offset=<N>     - commit offset      
+  FETCH_OFFSET topic=<name> partition=<N> group=<name>    - fetch committed offset      
+  REGISTER_GROUP topic=<name> group=<name>                - register consumer group      
+  GROUP_STATUS group=<name>                                - get group status      
+  HELP                                                     - show this help      
+  EXIT                                                     - exit`
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "CREATE "):
-		args := strings.Fields(cmd[7:])
-		if len(args) == 0 {
-			resp = "ERROR: missing topic name"
+		args := parseKeyValueArgs(cmd[7:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: missing topic parameter. Expected: CREATE topic=<name> [partitions=<N>]"
 			break
 		}
-		topicName := args[0]
-		partitions := 4
-		if len(args) > 1 {
-			n, err := strconv.Atoi(args[1])
+
+		partitions := 4 // default
+		if partStr, ok := args["partitions"]; ok {
+			n, err := strconv.Atoi(partStr)
 			if err != nil || n <= 0 {
 				resp = "ERROR: partitions must be a positive integer"
 				break
@@ -255,19 +261,26 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		if ch.Coordinator != nil {
 			err := ch.Coordinator.RegisterGroup(topicName, "default-group", partitions)
 			if err != nil {
-				log.Printf("[WARN] Failed to register default group: %v", err)
+				util.Warn("Failed to register default group with coordinator: %v", err)
 			}
 		}
 
 		resp = fmt.Sprintf("✅ Topic '%s' now has %d partitions", topicName, len(t.Partitions))
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "DELETE "):
-		topicName := strings.TrimSpace(cmd[7:])
-		if tm.DeleteTopic(topicName) {
-			resp = fmt.Sprintf("🗑️ Topic '%s' deleted", topicName)
+		args := parseKeyValueArgs(cmd[7:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: missing topic parameter. Expected: DELETE topic=<name>"
 			break
 		}
-		resp = fmt.Sprintf("ERROR: topic '%s' not found", topicName)
+
+		if tm.DeleteTopic(topicName) {
+			resp = fmt.Sprintf("🗑️ Topic '%s' deleted", topicName)
+		} else {
+			resp = fmt.Sprintf("ERROR: topic '%s' not found", topicName)
+		}
 
 	case strings.EqualFold(cmd, "LIST"):
 		names := tm.ListTopics()
@@ -278,17 +291,12 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		resp = strings.Join(names, ", ")
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "SUBSCRIBE "):
-		parts := strings.Fields(cmd[10:])
-		if len(parts) == 0 {
-			resp = "ERROR: missing topic name"
+		args := parseKeyValueArgs(cmd[10:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: missing topic parameter. Expected: SUBSCRIBE topic=<name> [group=<name>]"
 			break
-		}
-
-		topicName := parts[0]
-		groupName := "default"
-
-		if len(parts) > 1 {
-			groupName = parts[1]
 		}
 
 		t := tm.GetTopic(topicName)
@@ -296,19 +304,30 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			resp = fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
 			break
 		}
+
+		groupName := args["group"]
+		if groupName == "" {
+			groupName = ctx.ConsumerGroup
+		}
+
 		ctx.CurrentTopics[topicName] = struct{}{}
 		t.RegisterConsumerGroup(groupName, 1)
-
 		resp = fmt.Sprintf("✅ Subscribed to '%s' with group '%s'", topicName, groupName)
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "PUBLISH "):
-		parts := strings.SplitN(cmd[8:], " ", 2)
-		if len(parts) < 2 {
-			resp = "ERROR: invalid PUBLISH syntax"
+		args := parseKeyValueArgs(cmd[8:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: missing topic parameter"
 			break
 		}
-		topicName := parts[0]
-		payload := parts[1]
+
+		message, ok := args["message"]
+		if !ok || message == "" {
+			resp = "ERROR: missing message parameter"
+			break
+		}
 
 		t := tm.GetTopic(topicName)
 		if t == nil {
@@ -317,74 +336,77 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		}
 
 		msg := types.Message{
-			ID:      util.GenerateID(payload),
-			Payload: payload,
-			Key:     payload,
-		}
-		if err := tm.Publish(topicName, msg); err != nil {
-			resp = fmt.Sprintf("ERROR: %v", err)
-			break
-		}
-		resp = fmt.Sprintf("📤 Published to '%s'", topicName)
-
-	case strings.HasPrefix(strings.ToUpper(cmd), "PUBLISH_IDEMPOTENT "):
-		// PUBLISH_IDEMPOTENT <topic> <producerID> <seqNum> <epoch> <payload>
-		parts := strings.Fields(cmd)
-		if len(parts) < 6 {
-			resp = "ERROR: invalid PUBLISH_IDEMPOTENT syntax"
-			break
+			ID:      util.GenerateID(message),
+			Payload: message,
+			Key:     message,
 		}
 
-		topicName := parts[1]
-		producerID := parts[2]
-		seqNum, err := strconv.ParseUint(parts[3], 10, 64)
-		if err != nil {
-			resp = fmt.Sprintf("ERROR: invalid seqNum: %v", err)
-			break
-		}
-		epoch, err := strconv.ParseInt(parts[4], 10, 64)
-		if err != nil {
-			resp = fmt.Sprintf("ERROR: invalid epoch: %v", err)
-			break
-		}
-		payload := strings.Join(parts[5:], " ")
-
-		t := tm.GetTopic(topicName)
-		if t == nil {
-			resp = fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
-			break
-		}
-
-		msg := types.Message{
-			ProducerID: producerID,
-			SeqNum:     seqNum,
-			Epoch:      epoch,
-			Payload:    payload,
-			Key:        payload,
+		// Idempotence
+		if producerID, ok := args["producerId"]; ok {
+			msg.ProducerID = producerID
+			if seqNumStr, ok := args["seqNum"]; ok {
+				seqNum, err := strconv.ParseUint(seqNumStr, 10, 64)
+				if err != nil {
+					resp = fmt.Sprintf("ERROR: invalid seqNum: %v", err)
+					break
+				}
+				msg.SeqNum = seqNum
+			}
+			if epochStr, ok := args["epoch"]; ok {
+				epoch, err := strconv.ParseInt(epochStr, 10, 64)
+				if err != nil {
+					resp = fmt.Sprintf("ERROR: invalid epoch: %v", err)
+					break
+				}
+				msg.Epoch = epoch
+			}
 		}
 
-		if err := tm.Publish(topicName, msg); err != nil {
-			resp = fmt.Sprintf("ERROR: %v", err)
+		acks := args["acks"]
+		var err error
+		if acks == "1" {
+			err = tm.PublishWithAck(topicName, msg) // sync
 		} else {
-			resp = fmt.Sprintf("📤 Published to '%s' (idempotent)", topicName)
+			err = tm.Publish(topicName, msg) // async
+		}
+
+		if err != nil {
+			resp = fmt.Sprintf("ERROR: %v", err)
+			break
+		}
+
+		if acks == "1" {
+			resp = fmt.Sprintf("✅ Published to '%s' (acks=1)", topicName)
+		} else {
+			resp = fmt.Sprintf("📤 Published to '%s'", topicName)
 		}
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "SETGROUP "):
-		groupName := strings.TrimSpace(cmd[9:])
-		if groupName == "" {
-			resp = "ERROR: group name cannot be empty"
+		args := parseKeyValueArgs(cmd[9:])
+
+		groupName, ok := args["group"]
+		if !ok || groupName == "" {
+			resp = "ERROR: SETGROUP requires group parameter"
 			break
 		}
+
 		ctx.SetConsumerGroup(groupName)
 		resp = fmt.Sprintf("✅ Consumer group set to '%s'", groupName)
+
 	case strings.HasPrefix(strings.ToUpper(cmd), "REGISTER_GROUP "):
-		args := strings.Fields(cmd[15:])
-		if len(args) < 2 {
-			resp = "ERROR: REGISTER_GROUP requires <topic> <group>"
+		args := parseKeyValueArgs(cmd[15:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: REGISTER_GROUP requires topic parameter"
 			break
 		}
-		topicName := args[0]
-		groupName := args[1]
+
+		groupName, ok := args["group"]
+		if !ok || groupName == "" {
+			resp = "ERROR: REGISTER_GROUP requires group parameter"
+			break
+		}
 
 		t := tm.GetTopic(topicName)
 		if t == nil {
@@ -401,14 +423,27 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		} else {
 			resp = "ERROR: coordinator not available"
 		}
+
 	case strings.HasPrefix(strings.ToUpper(cmd), "JOIN_GROUP "):
-		args := strings.Fields(cmd[11:])
-		if len(args) < 2 {
-			resp = "ERROR: JOIN_GROUP requires <groupID> <consumerID>"
+		args := parseKeyValueArgs(cmd[11:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: JOIN_GROUP requires topic parameter"
 			break
 		}
-		groupName := args[0]
-		consumerID := args[1]
+
+		groupName, ok := args["group"]
+		if !ok || groupName == "" {
+			resp = "ERROR: JOIN_GROUP requires group parameter"
+			break
+		}
+
+		consumerID, ok := args["member"]
+		if !ok || consumerID == "" {
+			resp = "ERROR: JOIN_GROUP requires member parameter"
+			break
+		}
 
 		if ch.Coordinator != nil {
 			assignments, err := ch.Coordinator.AddConsumer(groupName, consumerID)
@@ -422,13 +457,25 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		}
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "LEAVE_GROUP "):
-		args := strings.Fields(cmd[12:])
-		if len(args) < 2 {
-			resp = "ERROR: LEAVE_GROUP requires <groupID> <consumerID>"
+		args := parseKeyValueArgs(cmd[12:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: LEAVE_GROUP requires topic parameter"
 			break
 		}
-		groupName := args[0]
-		consumerID := args[1]
+
+		groupName, ok := args["group"]
+		if !ok || groupName == "" {
+			resp = "ERROR: LEAVE_GROUP requires group parameter"
+			break
+		}
+
+		consumerID, ok := args["member"]
+		if !ok || consumerID == "" {
+			resp = "ERROR: LEAVE_GROUP requires member parameter"
+			break
+		}
 
 		if ch.Coordinator != nil {
 			err := ch.Coordinator.RemoveConsumer(groupName, consumerID)
@@ -441,14 +488,90 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			resp = "ERROR: coordinator not available"
 		}
 
-	case strings.HasPrefix(strings.ToUpper(cmd), "HEARTBEAT "):
-		args := strings.Fields(cmd[10:])
-		if len(args) < 2 {
-			resp = "ERROR: HEARTBEAT requires <group> <consumer_id>"
+	case strings.HasPrefix(strings.ToUpper(cmd), "FETCH_OFFSET "):
+		args := parseKeyValueArgs(cmd[13:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: FETCH_OFFSET requires topic parameter"
 			break
 		}
-		groupName := args[0]
-		consumerID := args[1]
+
+		partitionStr, ok := args["partition"]
+		if !ok || partitionStr == "" {
+			resp = "ERROR: FETCH_OFFSET requires partition parameter"
+			break
+		}
+		partition, err := strconv.Atoi(partitionStr)
+		if err != nil {
+			resp = "ERROR: invalid partition"
+			break
+		}
+
+		groupName, ok := args["group"]
+		if !ok || groupName == "" {
+			resp = "ERROR: FETCH_OFFSET requires group parameter"
+			break
+		}
+
+		if ch.OffsetManager != nil {
+			offset, err := ch.OffsetManager.GetOffset(groupName, topicName, partition)
+			if err != nil {
+				resp = fmt.Sprintf("ERROR: %v", err)
+			} else {
+				resp = fmt.Sprintf("%d", offset)
+			}
+		} else {
+			resp = "ERROR: offset manager not available"
+		}
+
+	case strings.HasPrefix(strings.ToUpper(cmd), "GROUP_STATUS "):
+		args := parseKeyValueArgs(cmd[13:])
+
+		groupName, ok := args["group"]
+		if !ok || groupName == "" {
+			resp = "ERROR: GROUP_STATUS requires group parameter"
+			break
+		}
+
+		if ch.Coordinator == nil {
+			resp = "ERROR: coordinator not available"
+			break
+		}
+
+		status, err := ch.Coordinator.GetGroupStatus(groupName)
+		if err != nil {
+			resp = fmt.Sprintf("ERROR: %v", err)
+			break
+		}
+
+		statusJSON, err := json.Marshal(status)
+		if err != nil {
+			resp = fmt.Sprintf("ERROR: failed to marshal status: %v", err)
+			break
+		}
+		resp = string(statusJSON)
+
+	case strings.HasPrefix(strings.ToUpper(cmd), "HEARTBEAT "):
+		args := parseKeyValueArgs(cmd[10:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: HEARTBEAT requires topic parameter"
+			break
+		}
+
+		groupName, ok := args["group"]
+		if !ok || groupName == "" {
+			resp = "ERROR: HEARTBEAT requires group parameter"
+			break
+		}
+
+		consumerID, ok := args["member"]
+		if !ok || consumerID == "" {
+			resp = "ERROR: HEARTBEAT requires member parameter"
+			break
+		}
 
 		if ch.Coordinator != nil {
 			err := ch.Coordinator.RecordHeartbeat(groupName, consumerID)
@@ -462,25 +585,44 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		}
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "COMMIT_OFFSET "):
-		args := strings.Fields(cmd[14:])
-		if len(args) < 3 {
-			resp = "ERROR: COMMIT_OFFSET requires <topic> <partition> <offset>"
+		args := parseKeyValueArgs(cmd[14:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: COMMIT_OFFSET requires topic parameter"
 			break
 		}
-		topicName := args[0]
-		partition, err := strconv.Atoi(args[1])
+
+		partitionStr, ok := args["partition"]
+		if !ok || partitionStr == "" {
+			resp = "ERROR: COMMIT_OFFSET requires partition parameter"
+			break
+		}
+		partition, err := strconv.Atoi(partitionStr)
 		if err != nil {
 			resp = "ERROR: invalid partition"
 			break
 		}
-		offset, err := strconv.Atoi(args[2])
+
+		groupID, ok := args["group"]
+		if !ok || groupID == "" {
+			resp = "ERROR: COMMIT_OFFSET requires groupID parameter"
+			break
+		}
+
+		offsetStr, ok := args["offset"]
+		if !ok || offsetStr == "" {
+			resp = "ERROR: COMMIT_OFFSET requires offset parameter"
+			break
+		}
+		offset, err := strconv.ParseUint(offsetStr, 10, 64)
 		if err != nil {
 			resp = "ERROR: invalid offset"
 			break
 		}
 
 		if ch.OffsetManager != nil {
-			err := ch.OffsetManager.CommitOffset(ctx.ConsumerGroup, topicName, partition, int64(offset))
+			err := ch.OffsetManager.CommitOffset(groupID, topicName, partition, offset)
 			if err != nil {
 				resp = fmt.Sprintf("ERROR: %v", err)
 			} else {
@@ -490,18 +632,38 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			resp = "ERROR: offset manager not available"
 		}
 
-	case strings.EqualFold(cmd, "CONSUME"):
-		var output []string
-		if len(output) == 0 {
-			resp = "(no messages)"
-			break
-		}
-		resp = strings.Join(output, "\n")
-
 	default:
 		resp = "ERROR: unknown command: " + cmd + ". Type HELP for available commands."
 	}
 
 	ch.logCommandResult(rawCmd, resp)
 	return resp
+}
+
+func parseKeyValueArgs(argsStr string) map[string]string {
+	result := make(map[string]string)
+	messageIdx := strings.Index(argsStr, "message=")
+
+	if messageIdx != -1 {
+		beforeMessage := argsStr[:messageIdx]
+		parts := strings.Fields(beforeMessage)
+		for _, part := range parts {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 {
+				result[kv[0]] = kv[1]
+			}
+		}
+
+		result["message"] = strings.TrimSpace(argsStr[messageIdx+8:])
+	} else {
+		parts := strings.Fields(argsStr)
+		for _, part := range parts {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 {
+				result[kv[0]] = kv[1]
+			}
+		}
+	}
+
+	return result
 }
