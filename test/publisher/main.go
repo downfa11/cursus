@@ -258,7 +258,6 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	}
 
 	if cfg.UseTLS && (cfg.TLSCertPath == "" || cfg.TLSKeyPath == "") {
-		cfg.UseTLS = false
 		return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
 	}
 

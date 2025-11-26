@@ -201,7 +201,7 @@ func TestPublisherTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to connect with TLS: %v", err)
 	}
-	defer publisher.producer.Close()
+	defer publisher.Close()
 
 	if _, ok := publisher.producer.conn.(*tls.Conn); !ok {
 		t.Error("Expected TLS connection")

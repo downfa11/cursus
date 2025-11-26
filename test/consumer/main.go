@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -233,7 +234,6 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 
 	// validate TLS config
 	if cfg.UseTLS && (cfg.TLSCertPath == "" || cfg.TLSKeyPath == "") {
-		cfg.UseTLS = false
 		return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
 	}
 
@@ -404,7 +404,7 @@ func (c *Consumer) sendHeartbeat() error {
 	}
 
 	_, err = c.ReadWithLength(conn)
-	if err != nil && err != io.EOF && !strings.Contains(err.Error(), "EOF") {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	return nil
@@ -522,7 +522,7 @@ func (c *Consumer) commitOffsets() {
 		}
 
 		_, err = c.ReadWithLength(conn)
-		if err != nil && err != io.EOF && !strings.Contains(err.Error(), "EOF") {
+		if err != nil && !errors.Is(err, io.EOF) {
 			log.Printf("Failed to read commit response for partition %d: %v", partition, err)
 		}
 
