@@ -32,7 +32,9 @@ func TestHeartbeatMonitor_TimeoutRemovesMember(t *testing.T) {
 					},
 				},
 			},
-			cfg: &config.Config{},
+			cfg: &config.Config{
+				ConsumerSessionTimeoutMS: 5000,
+			},
 		},
 	}
 
