@@ -142,7 +142,7 @@ func (bc *BrokerClient) PublishSimple(topic, payload, acks string) error {
 	}
 	defer func() {
 		if err := conn.SetReadDeadline(time.Time{}); err != nil {
-			util.Error("Failed to clear read deadline: %v", err)
+			util.Warn("Failed to clear read deadline: %v", err)
 		}
 	}()
 
@@ -156,7 +156,7 @@ func (bc *BrokerClient) PublishSimple(topic, payload, acks string) error {
 		return fmt.Errorf("broker error: %s", resp)
 	}
 
-	if acks == "1" && !strings.Contains(resp, "acks=1") {
+	if acks == "1" && resp != "OK" {
 		return fmt.Errorf("unexpected response: %s", resp)
 	}
 

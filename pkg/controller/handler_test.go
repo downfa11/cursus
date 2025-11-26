@@ -59,8 +59,6 @@ func parseKeyValueArgs(argsStr string) map[string]string {
 }
 
 func TestHandleCommand_CreateListDelete(t *testing.T) {
-	cfg := &config.Config{}
-	_ = controller.NewCommandHandler(nil, nil, cfg, nil, nil)
 	ftm := newFakeTopicManager()
 
 	handleCommandShim := func(rawCmd string) string {

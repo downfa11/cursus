@@ -233,8 +233,8 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 
 	// validate TLS config
 	if cfg.UseTLS && (cfg.TLSCertPath == "" || cfg.TLSKeyPath == "") {
-		log.Printf("[WARN] TLS enabled but cert/key paths not provided, disabling TLS")
 		cfg.UseTLS = false
+		return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
 	}
 
 	return cfg, nil
@@ -420,11 +420,7 @@ func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
 		}
 
 		offset := c.offsetManager.Get(partition)
-
 		batchSize := remainingQuota
-		if batchSize > c.config.MaxPollRecords {
-			batchSize = c.config.MaxPollRecords
-		}
 
 		messages, err := c.fetchMessagesWithLimit(partition, offset, batchSize)
 		if err != nil {

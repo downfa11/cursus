@@ -112,7 +112,7 @@ func TestIdempotentMessageExtremeNumbers(t *testing.T) {
 		math.MaxUint64, math.MinInt64,
 	)
 
-	_, seq, epoch, _, _, err := util.DecodeIdempotentMessage(data)
+	decPID, seq, epoch, decTopic, decPayload, err := util.DecodeIdempotentMessage(data)
 	if err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -122,6 +122,9 @@ func TestIdempotentMessageExtremeNumbers(t *testing.T) {
 	}
 	if epoch != math.MinInt64 {
 		t.Errorf("expected %d, got %d", math.MinInt64, epoch)
+	}
+	if decPID != producerID || decTopic != topic || decPayload != payload {
+		t.Errorf("string fields mismatch: pid=%s topic=%s payload=%s", decPID, decTopic, decPayload)
 	}
 }
 

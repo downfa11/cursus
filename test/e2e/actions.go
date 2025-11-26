@@ -16,7 +16,9 @@ func (a *Actions) StartBroker() *Actions {
 		a.ctx.t.Fatalf("Broker health check failed: %v", err)
 	}
 
-	_ = a.ctx.getClient().DeleteTopic(a.ctx.topic)
+	if err := a.ctx.getClient().DeleteTopic(a.ctx.topic); err != nil {
+		a.ctx.t.Logf("Note: Topic cleanup returned: %v (may be expected)", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	a.ctx.t.Log("Broker is ready")

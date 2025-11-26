@@ -258,8 +258,8 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	}
 
 	if cfg.UseTLS && (cfg.TLSCertPath == "" || cfg.TLSKeyPath == "") {
-		log.Printf("[WARN] TLS enabled but cert/key paths not provided, disabling TLS")
 		cfg.UseTLS = false
+		return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
 	}
 
 	return cfg, nil
@@ -618,7 +618,7 @@ func main() {
 	if err := publisher.producer.Connect(cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
 		log.Fatalf("Failed to connect to broker: %v", err)
 	}
-	defer publisher.producer.Close()
+	defer publisher.Close()
 
 	if err := publisher.CreateTopic(); err != nil {
 		fmt.Printf("Failed to create topic: %v\n", err)

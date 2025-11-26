@@ -64,6 +64,7 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, coordinator C
 		Partitions:     partitions,
 		consumerGroups: make(map[string]*types.ConsumerGroup),
 		coordinator:    coordinator,
+		cfg:            cfg,
 	}, nil
 }
 
@@ -314,7 +315,7 @@ func (p *Partition) RegisterGroup(groupName string) chan types.Message {
 	if ch, ok := p.subs[groupName]; ok {
 		return ch
 	}
-	ch := make(chan types.Message, 10000)
+	ch := make(chan types.Message, DefaultBufSize)
 	p.subs[groupName] = ch
 	return ch
 }

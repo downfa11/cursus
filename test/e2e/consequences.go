@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const heartbeatStalenessThreshold = 30 * time.Second
+
 // Consequences represents test assertions (Then phase)
 type Consequences struct {
 	ctx *TestContext
@@ -68,7 +70,7 @@ func MessagesPublishedSince(expected int, since time.Time) Expectation {
 		if ctx.publishedCount != expected {
 			return fmt.Errorf("expected %d messages published, got %d", expected, ctx.publishedCount)
 		}
-		if ctx.startTime.Before(since) {
+		if ctx.startTime.Before(since) || time.Now().Before(since) {
 			return fmt.Errorf("messages were not published after %v", since)
 		}
 		return nil
@@ -113,7 +115,7 @@ func HeartbeatsSent() Expectation {
 
 		for _, member := range status.Members {
 			timeSinceHeartbeat := time.Since(member.LastHeartbeat)
-			if timeSinceHeartbeat > 30*time.Second {
+			if timeSinceHeartbeat > heartbeatStalenessThreshold {
 				return fmt.Errorf("member %s hasn't sent heartbeat in %v",
 					member.MemberID, timeSinceHeartbeat)
 			}

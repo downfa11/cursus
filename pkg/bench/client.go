@@ -35,7 +35,7 @@ func (c *BenchClient) RunTopicCreationPhase() error {
 
 	if err := c.sendCommand(conn, c.Topic, createPayload); err != nil {
 		if strings.Contains(err.Error(), "topic exists") {
-			util.Info("Topic '%s' already exists, continuing...\n", c.Topic)
+			util.Info("Topic '%s' already exists, continuing...", c.Topic)
 			return nil
 		}
 		return fmt.Errorf("topic creation failed: %w", err)
@@ -167,7 +167,7 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 
 	conn, err := net.Dial("tcp", c.Addr)
 	if err != nil {
-		util.Error("[C%d] connection failed: %v\n", cid, err)
+		util.Error("[C%d] connection failed: %v", cid, err)
 		return
 	}
 	defer conn.Close()
@@ -179,12 +179,12 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 	cmdBytes := util.EncodeMessage(c.Topic, consumeCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
-		util.Error("send command failed in Consumer-%d: %v\n", cid, err)
+		util.Error("send command failed in Consumer-%d: %v", cid, err)
 		return
 	}
 
 	if err := conn.SetReadDeadline(time.Now().Add(AckTimeout * 2)); err != nil {
-		util.Error("set read deadline failed in Consumer-%d: %v. Continuing...\n", cid, err)
+		util.Error("set read deadline failed in Consumer-%d: %v. Continuing...", cid, err)
 	}
 
 	consumedCount := 0
@@ -194,12 +194,12 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			util.Error("Read message %d failed in Consumer-%d: %v\n", i, cid, err)
+			util.Error("Read message %d failed in Consumer-%d: %v", i, cid, err)
 			return
 		}
 
 		if err := conn.SetReadDeadline(time.Now().Add(AckTimeout * 2)); err != nil {
-			util.Error("Warning: Failed to reset read deadline in Consumer-%d: %v\n", cid, err)
+			util.Error("Warning: Failed to reset read deadline in Consumer-%d: %v", cid, err)
 		}
 
 		if len(msgBytes) == 0 {
@@ -210,16 +210,16 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 		if !strings.HasPrefix(payload, "bench-msg-P") ||
 			!strings.Contains(payload, "-Part") ||
 			!strings.Contains(payload, "-Msg") {
-			util.Warn("Invalid message format in Consumer-%d: %s\n", cid, payload)
+			util.Warn("Invalid message format in Consumer-%d: %s", cid, payload)
 		}
 
 		consumedCount++
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
-		util.Error("Warning: Failed to clear read deadline: %v\n", err)
+		util.Error("Warning: Failed to clear read deadline: %v", err)
 	}
 
-	util.Debug("Consumer%d finished reading %d/%d messages.\n", cid, consumedCount, count)
+	util.Debug("Consumer%d finished reading %d/%d messages.", cid, consumedCount, count)
 }
 
 func (b *BenchmarkRunner) RunConcurrentProducerPhase() error {

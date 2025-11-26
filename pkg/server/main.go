@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -38,7 +37,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 		metrics.StartMetricsServer(cfg.ExporterPort)
 		util.Info("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
 	} else {
-		log.Println("📉 Exporter disabled")
+		util.Info("📉 Exporter disabled")
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.BrokerPort)

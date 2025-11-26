@@ -230,7 +230,7 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
   JOIN_GROUP group=<name> consumer=<id>                    - join consumer group      
   LEAVE_GROUP group=<name> consumer=<id>                   - leave consumer group      
   HEARTBEAT group=<name> consumer=<id>                     - send heartbeat      
-  COMMIT_OFFSET topic=<name> partition=<N> group=<N> offset=<N>     - commit offset      
+  COMMIT_OFFSET topic=<name> partition=<N> group=<name> offset=<N>     - commit offset      
   FETCH_OFFSET topic=<name> partition=<N> group=<name>    - fetch committed offset      
   REGISTER_GROUP topic=<name> group=<name>                - register consumer group      
   GROUP_STATUS group=<name>                                - get group status      
@@ -345,11 +345,19 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		if producerID, ok := args["producerId"]; ok {
 			msg.ProducerID = producerID
 			if seqNumStr, ok := args["seqNum"]; ok {
-				seqNum, _ := strconv.ParseUint(seqNumStr, 10, 64)
+				seqNum, err := strconv.ParseUint(seqNumStr, 10, 64)
+				if err != nil {
+					resp = fmt.Sprintf("ERROR: invalid seqNum: %v", err)
+					break
+				}
 				msg.SeqNum = seqNum
 			}
 			if epochStr, ok := args["epoch"]; ok {
-				epoch, _ := strconv.ParseInt(epochStr, 10, 64)
+				epoch, err := strconv.ParseInt(epochStr, 10, 64)
+				if err != nil {
+					resp = fmt.Sprintf("ERROR: invalid epoch: %v", err)
+					break
+				}
 				msg.Epoch = epoch
 			}
 		}
