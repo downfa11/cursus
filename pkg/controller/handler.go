@@ -52,7 +52,7 @@ func (ch *CommandHandler) logCommandResult(cmd, response string) {
 	}
 
 	cleanResponse := strings.ReplaceAll(response, "\n", " ")
-	util.Info("%s - [%s] to Response [%s]", status, cmd, cleanResponse)
+	util.Debug("%s - [%s] to Response [%s]", status, cmd, cleanResponse)
 }
 
 // HandleConsumeCommand is responsible for parsing the CONSUME command and streaming messages.
