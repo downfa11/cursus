@@ -12,9 +12,9 @@ type LogLevel int
 
 const (
 	LogLevelDebug LogLevel = iota
-	LogLevelInfo
-	LogLevelWarn
-	LogLevelError
+	LogLevelInfo  LogLevel = 1
+	LogLevelWarn  LogLevel = 2
+	LogLevelError LogLevel = 3
 )
 
 func parseLogLevelString(s string) LogLevel {
