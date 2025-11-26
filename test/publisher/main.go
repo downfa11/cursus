@@ -223,7 +223,7 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		cfg.RetryBackoffMS = 100
 	}
 	if cfg.AckTimeoutMS <= 0 {
-		cfg.AckTimeoutMS = 1
+		cfg.AckTimeoutMS = 5000
 	}
 	if cfg.MaxInflightRequests <= 0 {
 		cfg.MaxInflightRequests = 5

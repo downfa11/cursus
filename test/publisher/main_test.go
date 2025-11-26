@@ -87,6 +87,7 @@ func TestPublisherConfigNormalization(t *testing.T) {
 	}
 
 	publisher := NewPublisher(cfg)
+	defer publisher.Close()
 
 	if publisher.config.MaxInflightRequests != 5 {
 		t.Errorf("Expected MaxInflightRequests=5, got %d", publisher.config.MaxInflightRequests)
@@ -133,6 +134,8 @@ func TestPublisherMessageFormat(t *testing.T) {
 	}
 
 	publisher := NewPublisher(cfg)
+	defer publisher.Close()
+
 	message := "test message"
 
 	payload := fmt.Sprintf("IDEMPOTENT:%s:%s:1:%d:%s",
@@ -160,6 +163,7 @@ func TestPublisherInflightControl(t *testing.T) {
 	}
 
 	publisher := NewPublisher(cfg)
+	defer publisher.Close()
 
 	if cap(publisher.inflightSem) != 2 {
 		t.Errorf("Expected inflight capacity=2, got %d", cap(publisher.inflightSem))
@@ -247,6 +251,7 @@ func TestPublisherRetry(t *testing.T) {
 	}
 
 	publisher := NewPublisher(cfg)
+	defer publisher.Close()
 
 	if publisher.config.MaxRetries != 3 {
 		t.Errorf("Expected MaxRetries=3, got %d", publisher.config.MaxRetries)
@@ -275,6 +280,8 @@ func TestPublisherAcks(t *testing.T) {
 			}
 
 			publisher := NewPublisher(cfg)
+			defer publisher.Close()
+
 			if publisher.config.Acks != tc.acks {
 				t.Errorf("Expected Acks=%q, got %q", tc.acks, publisher.config.Acks)
 			}
