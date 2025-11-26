@@ -1,5 +1,10 @@
 {
-  "listen_port": 12345,
-  "log_base": "broker_log",
-  "segment_size": 1048576
+  "broker_port": 9000,
+  "cleanup_interval": 60,
+  "enable_exporter": true,
+  "exporter_port": 9100,
+  "use_tls": false,
+  "enable_gzip": false,
+  "channel_buffer_size": 10000,
+  "log_level": "debug"
 }
