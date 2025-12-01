@@ -132,24 +132,25 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		}
 	}
 
-	totalSize := 0
+	validMsgs := make([]string, 0, len(batch))
 	for _, msg := range batch {
-		msgLen := len(msg)
-		if msgLen > 0xFFFFFFFF {
-			util.Error("message too large to write: %d bytes", msgLen)
+		if len(msg) > 0xFFFFFFFF {
+			util.Error("message too large to write: %d bytes", len(msg))
 			continue
 		}
-		totalSize += 4 + msgLen
+		validMsgs = append(validMsgs, msg)
+	}
+
+	totalSize := 0
+	for _, msg := range validMsgs {
+		totalSize += 4 + len(msg)
 	}
 
 	buffer := make([]byte, 0, totalSize)
 	lenBuf := make([]byte, 4)
 
-	for _, msg := range batch {
+	for _, msg := range validMsgs {
 		msgLen := len(msg)
-		if msgLen > 0xFFFFFFFF {
-			continue
-		}
 		binary.BigEndian.PutUint32(lenBuf, uint32(msgLen))
 		buffer = append(buffer, lenBuf...)
 		buffer = append(buffer, msg...)

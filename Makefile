@@ -80,15 +80,14 @@ bench:
 	cd test/publisher && go build -o ../../bin/publisher .
 	cd test/consumer && go build -o ../../bin/consumer .
 	@bash -c '\
-		bin/go-broker -benchmark=true & \
+		bin/go-broker & \
 		BROKER_PID=$$!; \
 		for i in {1..30}; do \
 			if curl -f http://localhost:9080/health 2>/dev/null; then break; fi; \
 			sleep 1; \
 		done; \
-		./bin/publisher -create-topic -topic bench-topic -partitions 12; \
-		./bin/publisher -produce -topic bench-topic -messages 1000 -producers 12 & \
-		./bin/consumer -consume -topic bench-topic -consumers 12 & \
+		./bin/publisher & \
+		./bin/consumer & \
 		wait; \
 		kill $$BROKER_PID || true; \
 	'

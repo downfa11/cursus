@@ -276,33 +276,7 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 }
 
 func (d *DiskHandler) countMessagesInSegment() (int, error) {
-	filePath := fmt.Sprintf("%s_segment_%d.log", d.BaseName, d.CurrentSegment)
-
-	reader, err := mmap.Open(filePath)
-	if err != nil {
-		return 0, fmt.Errorf("mmap open failed: %w", err)
-	}
-	defer reader.Close()
-
-	count := 0
-	pos := 0
-	for pos < reader.Len() {
-		if pos+4 > reader.Len() {
-			break
-		}
-
-		lenBytes := make([]byte, 4)
-		_, err := reader.ReadAt(lenBytes, int64(pos))
-		if err != nil {
-			break
-		}
-
-		msgLen := binary.BigEndian.Uint32(lenBytes)
-		pos += 4 + int(msgLen)
-		count++
-	}
-
-	return count, nil
+	return d.countMessagesInSegmentID(d.CurrentSegment)
 }
 
 func (d *DiskHandler) countMessagesInSegmentID(segmentID int) (int, error) {

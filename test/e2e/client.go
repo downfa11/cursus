@@ -285,10 +285,12 @@ func (bc *BrokerClient) RegisterConsumerGroup(topic, groupName string, consumerC
 		return fmt.Errorf("broker error: %s", respStr)
 	}
 
+	bc.mu.Lock()
 	bc.registered = true
 	bc.topic = topic
 	bc.consumerGroup = groupName
 	bc.consumerID = consumerID
+	bc.mu.Unlock()
 
 	return nil
 }

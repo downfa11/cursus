@@ -94,14 +94,25 @@ func (sm *StreamManager) monitorConnection(key string, stream *StreamConnection)
 	}
 }
 
+func (sc *StreamConnection) Conn() net.Conn {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	return sc.conn
+}
+
 func (sc *StreamConnection) closeConn() {
+	sc.mu.Lock()
+	conn := sc.conn
+	sc.conn = nil
+	sc.mu.Unlock()
+
 	sc.stopOnce.Do(func() {
 		close(sc.stopCh)
-		if sc.conn != nil {
-			_ = sc.conn.Close()
-			sc.conn = nil
-		}
 	})
+
+	if conn != nil {
+		_ = conn.Close()
+	}
 }
 
 func (sm *StreamManager) StopStream(key string) {
@@ -112,7 +123,7 @@ func (sm *StreamManager) StopStream(key string) {
 		return
 	}
 
-	close(stream.stopCh)
+	stream.Stop()
 }
 
 func (sm *StreamManager) GetStreamsForPartition(topic string, partitionID int) []*StreamConnection {
@@ -131,7 +142,6 @@ func (sm *StreamManager) GetStreamsForPartition(topic string, partitionID int) [
 func (sc *StreamConnection) Topic() string  { return sc.topic }
 func (sc *StreamConnection) Partition() int { return sc.partition }
 func (sc *StreamConnection) Group() string  { return sc.group }
-func (sc *StreamConnection) Conn() net.Conn { return sc.conn }
 
 func (sc *StreamConnection) Offset() uint64 {
 	sc.mu.RLock()

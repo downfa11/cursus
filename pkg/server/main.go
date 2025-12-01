@@ -129,10 +129,6 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		topicName, payload := util.DecodeMessage(data)
 
 		if strings.HasPrefix(strings.ToUpper(payload), "HEARTBEAT") {
-			if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
-				util.Error("⚠️ SetReadDeadline on heartbeat error: %v", err)
-				return
-			}
 			writeResponseWithTimeout(conn, "OK", writeTimeout)
 			continue
 		}
@@ -186,6 +182,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			if topicName == "" || payload == "" {
 				rawInput := strings.TrimSpace(string(data))
 				util.Debug("[%s] Received unrecognized input: %s", conn.RemoteAddr().String(), rawInput)
+				writeResponse(conn, "ERROR: malformed input - missing topic or payload")
 				return
 			}
 

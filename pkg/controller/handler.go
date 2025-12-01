@@ -246,6 +246,12 @@ func (ch *CommandHandler) streamLoop(stream *stream.StreamConnection) error {
 			messages, err := dh.ReadMessages(uint64(stream.Offset()), 100)
 			if err != nil {
 				util.Error("Failed to read messages in stream loop: %v", err)
+				if ch.Coordinator != nil && stream.Offset() > 0 {
+					err = ch.Coordinator.CommitOffset(stream.Group(), stream.Topic(), stream.Partition(), uint64(stream.Offset()))
+					if err != nil {
+						util.Error("Failed to commit offset: %v", err)
+					}
+				}
 				return err
 			}
 

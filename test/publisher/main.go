@@ -469,7 +469,6 @@ func (p *Publisher) sendWithRetry(payload []byte, _ []BatchMessage, part int) er
 		}
 
 		_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond))
-		backoff = min(backoff*2, p.config.MaxBackoffMS)
 		if _, err := conn.Write(payload); err != nil {
 			lastErr = fmt.Errorf("write failed: %w", err)
 			_ = p.producer.ReconnectPartition(part, p.config.BrokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath)
@@ -775,7 +774,9 @@ func main() {
 		log.Printf("verify: %v", err)
 	}
 
+	pub.sentMu.Lock()
 	sentMessages := len(pub.sentSeqs)
+	pub.sentMu.Unlock()
 	printBenchmarkSummaryFixed(partitionStats, sentMessages, duration)
 }
 

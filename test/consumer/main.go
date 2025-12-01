@@ -552,7 +552,6 @@ func (c *Consumer) startStreaming() error {
 		}(pid, pc)
 	}
 
-	go c.startCommitLoop()
 	<-c.doneCh
 	return nil
 }
@@ -595,7 +594,9 @@ func (c *Consumer) Close() error {
 	}
 
 	close(c.doneCh)
-	close(c.coordinator.doneCh)
+	if c.coordinator != nil {
+		close(c.coordinator.doneCh)
+	}
 	return nil
 }
 
@@ -613,14 +614,12 @@ func (c *Consumer) PrintBenchmarkSummary() {
 	fmt.Printf("Elapsed time: %v\n", duration)
 	fmt.Printf("Approx TPS: %.2f\n", tps)
 	fmt.Println("==================================")
-	os.Exit(0)
 }
 
 func sendBinaryMessage(conn net.Conn, msg []byte) error {
-	data := []byte(msg)
-	buf := make([]byte, 4+len(data))
-	binary.BigEndian.PutUint32(buf[0:4], uint32(len(data)))
-	copy(buf[4:], data)
+	buf := make([]byte, 4+len(msg))
+	binary.BigEndian.PutUint32(buf[0:4], uint32(len(msg)))
+	copy(buf[4:], msg)
 	_, err := conn.Write(buf)
 	return err
 }
@@ -684,7 +683,9 @@ func main() {
 		log.Fatalf("Failed to create consumer: %v", err)
 	}
 
-	c.Start()
+	if err := c.Start(); err != nil {
+		log.Fatalf("Failed to start consumer: %v", err)
+	}
 	log.Println("consumer started.")
 
 	switch c.config.Mode {

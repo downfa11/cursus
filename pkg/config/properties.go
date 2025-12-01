@@ -454,4 +454,13 @@ func (cfg *Config) Normalize() {
 		)
 		cfg.ConsumerHeartbeatCheckMS = cfg.ConsumerSessionTimeoutMS / 2
 	}
+	if cfg.MaxStreamConnections <= 0 {
+		cfg.MaxStreamConnections = 1000
+	}
+	if cfg.StreamTimeout <= 0 {
+		cfg.StreamTimeout = 30 * time.Minute
+	}
+	if cfg.StreamHeartbeatInterval <= 0 {
+		cfg.StreamHeartbeatInterval = 30 * time.Second
+	}
 }

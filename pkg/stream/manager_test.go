@@ -52,9 +52,9 @@ func TestGetStreamsForPartition(t *testing.T) {
 
 	var conns []net.Conn
 	for i := 0; i < 3; i++ {
-		c, _ := net.Pipe()
-		conns = append(conns, c)
-		s := NewStreamConnection(c, "topicA", i, "group", uint64(i))
+		c1, c2 := net.Pipe()
+		conns = append(conns, c1, c2)
+		s := NewStreamConnection(c1, "topicA", i, "group", uint64(i))
 		if err := sm.AddStream("key"+strconv.Itoa(i), s); err != nil {
 			t.Fatalf("failed to add stream: %v", err)
 		}

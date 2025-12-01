@@ -98,7 +98,7 @@ func OffsetsCommitted() Expectation {
 func HeartbeatsSent() Expectation {
 	return func(ctx *TestContext) error {
 		client := NewBrokerClient(ctx.brokerAddr)
-		if err := client.RegisterConsumerGroup(ctx.topic, ctx.consumerGroup, 1); err != nil {
+		if err := client.RegisterConsumerGroup(ctx.topic, ctx.consumerGroup, ctx.partitions); err != nil {
 			return fmt.Errorf("failed to register consumer group: %w", err)
 		}
 

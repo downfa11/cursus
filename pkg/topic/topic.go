@@ -48,7 +48,7 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 		if err != nil {
 			return nil, fmt.Errorf("open handler for %s[%d]: %w", name, i, err)
 		}
-		partitions[i] = NewPartition(i, name, dh, cfg, sm)
+		partitions[i] = NewPartition(i, name, dh, sm)
 	}
 	return &Topic{
 		Name:           name,
@@ -60,7 +60,7 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 }
 
 // NewPartition creates a partition instance.
-func NewPartition(id int, topic string, dh interface{}, cfg *config.Config, sm *stream.StreamManager) *Partition {
+func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager) *Partition {
 	p := &Partition{
 		id:            id,
 		topic:         topic,
@@ -80,7 +80,7 @@ func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 			util.Error("❌ failed to attach partition %d for topic '%s': %v\n", idx, t.Name, err)
 			return
 		}
-		newP := NewPartition(idx, t.Name, dh, t.cfg, t.streamManager)
+		newP := NewPartition(idx, t.Name, dh, t.streamManager)
 		t.Partitions = append(t.Partitions, newP)
 	}
 }
@@ -196,9 +196,11 @@ func (p *Partition) broadcastToStreams(msg types.Message) {
 	for _, stream := range streams {
 		select {
 		case <-stream.StopCh():
+			util.Debug("Stream stopped, skipping broadcast for partition %d", p.id)
 			continue
 		default:
 			if err := util.WriteWithLength(stream.Conn(), []byte(msg.Payload)); err != nil {
+				util.Warn("Failed to broadcast to stream for topic '%s' partition %d: %v", p.topic, p.id, err)
 				continue
 			}
 			stream.IncrementOffset()
