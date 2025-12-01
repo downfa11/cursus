@@ -26,7 +26,6 @@ func (d *DiskHandler) flushLoop() {
 		select {
 		case msg, ok := <-d.writeCh:
 			if !ok {
-				util.Debug("writeCh closed")
 				continue
 			}
 			batch = append(batch, msg)
@@ -99,11 +98,31 @@ func (d *DiskHandler) flushLoop() {
 	}
 }
 
+func (d *DiskHandler) syncLoop() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			d.ioMu.Lock()
+			file := d.file
+			d.ioMu.Unlock()
+
+			if file != nil {
+				if err := file.Sync(); err != nil {
+					util.Error("failed to sync file: %v", err)
+				}
+			}
+
+		case <-d.done:
+			return
+		}
+	}
+}
+
 // writeBatch writes a batch of messages into the current segment file.
 func (d *DiskHandler) writeBatch(batch []string) {
-	start := time.Now()
-	util.Debug("Starting batch write: %d messages", len(batch))
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -116,54 +135,53 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		}
 	}
 
-	var lenBuf [4]byte
-
+	totalSize := 0
 	for _, msg := range batch {
-		data := []byte(msg)
-		if len(data) > 0xFFFFFFFF {
-			util.Error("message too large to write: %d bytes", len(data))
+		msgLen := len(msg)
+		if msgLen > 0xFFFFFFFF {
+			util.Error("message too large to write: %d bytes", msgLen)
 			continue
 		}
-		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
-
-		totalLen := uint64(4 + len(data))
-		if d.CurrentOffset+totalLen > d.SegmentSize {
-			if err := d.rotateSegment(); err != nil {
-				util.Error("rotateSegment failed to rotate segment: %v", err)
-				break
-			}
-		}
-
-		if _, err := d.writer.Write(lenBuf[:]); err != nil {
-			util.Error("writeBatch failed writing length: %v", err)
-			break
-		}
-		if _, err := d.writer.Write(data); err != nil {
-			util.Error("writeBatch failed writing data: %v", err)
-			break
-		}
-
-		d.CurrentOffset += totalLen
-		d.AbsoluteOffset++
+		totalSize += 4 + msgLen
 	}
+
+	buffer := make([]byte, 0, totalSize)
+	lenBuf := make([]byte, 4)
+
+	for _, msg := range batch {
+		msgLen := len(msg)
+		if msgLen > 0xFFFFFFFF {
+			continue
+		}
+		binary.BigEndian.PutUint32(lenBuf, uint32(msgLen))
+		buffer = append(buffer, lenBuf...)
+		buffer = append(buffer, msg...)
+	}
+
+	bufferLen := uint64(len(buffer))
+	if d.CurrentOffset+bufferLen > d.SegmentSize {
+		if err := d.rotateSegment(); err != nil {
+			util.Error("rotateSegment failed to rotate segment: %v", err)
+			return
+		}
+	}
+
+	if _, err := d.writer.Write(buffer); err != nil {
+		util.Error("writeBatch failed: %v", err)
+		return
+	}
+
+	d.CurrentOffset += uint64(len(buffer))
+	d.AbsoluteOffset += uint64(len(batch))
 
 	if err := d.writer.Flush(); err != nil {
 		util.Error("flush failed after batch: %v", err)
 		return
 	}
-
-	if d.file != nil {
-		if err := d.file.Sync(); err != nil {
-			util.Error("sync failed after batch: %v", err)
-		}
-	}
-	util.Debug("✅ WriteBatch Completed in %v", time.Since(start))
 }
 
 // WriteDirect writes a single message immediately without batching.
 func (d *DiskHandler) WriteDirect(msg string) {
-	util.Debug("[WRITE_DIRECT] Starting direct write (len=%d)", len(msg))
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -205,12 +223,6 @@ func (d *DiskHandler) WriteDirect(msg string) {
 
 	if err := d.writer.Flush(); err != nil {
 		util.Error("flush failed in WriteDirect: %v", err)
-	}
-
-	if d.file != nil {
-		if err := d.file.Sync(); err != nil {
-			util.Error("failed to sync disk file: %v", err)
-		}
 	}
 }
 
