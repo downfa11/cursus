@@ -10,19 +10,21 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
+	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
 type TopicManager struct {
-	topics      map[string]*Topic
-	dedupMap    sync.Map
-	cleanupInt  time.Duration
-	stopCh      chan struct{}
-	hp          HandlerProvider
-	mu          sync.RWMutex
-	cfg         *config.Config
-	coordinator *coordinator.Coordinator
+	topics        map[string]*Topic
+	dedupMap      sync.Map
+	cleanupInt    time.Duration
+	stopCh        chan struct{}
+	hp            HandlerProvider
+	mu            sync.RWMutex
+	cfg           *config.Config
+	StreamManager *stream.StreamManager
+	coordinator   *coordinator.Coordinator
 }
 
 // HandlerProvider defines an interface to provide disk handlers.
@@ -30,25 +32,26 @@ type HandlerProvider interface {
 	GetHandler(topic string, partitionID int) (*disk.DiskHandler, error)
 }
 
-func NewTopicManager(cfg *config.Config, hp HandlerProvider, cd *coordinator.Coordinator) *TopicManager {
+func NewTopicManager(cfg *config.Config, hp HandlerProvider, cd *coordinator.Coordinator, sm *stream.StreamManager) *TopicManager {
 	cleanupSec := cfg.CleanupInterval
 	if cleanupSec <= 0 {
 		cleanupSec = 60
 	}
 
 	tm := &TopicManager{
-		topics:      make(map[string]*Topic),
-		cleanupInt:  time.Duration(cleanupSec) * time.Second,
-		stopCh:      make(chan struct{}),
-		hp:          hp,
-		cfg:         cfg,
-		coordinator: cd,
+		topics:        make(map[string]*Topic),
+		cleanupInt:    time.Duration(cleanupSec) * time.Second,
+		stopCh:        make(chan struct{}),
+		hp:            hp,
+		cfg:           cfg,
+		StreamManager: sm,
+		coordinator:   cd,
 	}
 	go tm.cleanupLoop()
 	return tm
 }
 
-func (tm *TopicManager) CreateTopic(name string, partitionCount int) *Topic {
+func (tm *TopicManager) CreateTopic(name string, partitionCount int) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -57,26 +60,25 @@ func (tm *TopicManager) CreateTopic(name string, partitionCount int) *Topic {
 		switch {
 		case partitionCount < current:
 			util.Error("⚠️ cannot decrease partitions for topic '%s' (%d → %d)\n", name, current, partitionCount)
-			return existing
+			return
 		case partitionCount > current:
 			existing.AddPartitions(partitionCount-current, tm.hp)
 			util.Info("🔄 topic '%s' partitions increased: %d → %d\n", name, current, len(existing.Partitions))
-			return existing
+			return
 		default:
 			util.Info("ℹ️ topic '%s' already exists with %d partitions\n", name, current)
-			return existing
+			return
 		}
 	}
 
-	t, err := NewTopic(name, partitionCount, tm.hp, tm.coordinator, tm.cfg)
+	t, err := NewTopic(name, partitionCount, tm.hp, tm.cfg, tm.StreamManager)
 	if err != nil {
 		util.Error("❌ failed to create topic '%s': %v\n", name, err)
-		return nil
+		return
 	}
 	tm.topics[name] = t
 	t.RegisterConsumerGroup("default-group", 1)
 	util.Info("✅ topic '%s' created with %d partitions\n", name, partitionCount)
-	return t
 }
 
 func (tm *TopicManager) GetTopic(name string) *Topic {
@@ -111,47 +113,40 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 		msg.ID = util.GenerateID(idSource)
 	}
 
-	util.Debug("Generated message ID: %d", msg.ID)
-
 	now := time.Now()
 	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
-		util.Info("Duplicate message detected: ProducerID=%s, SeqNum=%d", msg.ProducerID, msg.SeqNum)
+		util.Info("Duplicate message detected: ProducerID=%s, MessageID:%s, SeqNum=%d", msg.ProducerID, msg.ID, msg.SeqNum)
 		return nil
 	}
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
-		util.Debug("Topic '%s' not found, checking auto-create", topicName)
 		if tm.cfg.AutoCreateTopics {
-			util.Debug("Auto-creating topic '%s'", topicName)
-			t = tm.CreateTopic(topicName, 4)
-			if t == nil {
-				return fmt.Errorf("failed to auto-create topic '%s'", topicName)
-			}
+			util.Debug("Topic '%s' not found, checking auto-create", topicName)
+			tm.CreateTopic(topicName, 4)
+			t = tm.GetTopic(topicName)
 		} else {
 			return fmt.Errorf("topic '%s' does not exist", topicName)
 		}
 	}
 
-	util.Debug("Topic found/created. Partition count: %d", len(t.Partitions))
+	if t == nil {
+		return fmt.Errorf("topic '%s' does not exist and auto-creation failed", topicName)
+	}
 
 	if requireAck {
-		util.Debug("Calling t.PublishSync")
 		if err := t.PublishSync(msg); err != nil {
 			// Allow safe retry with same ProducerID+SeqNum
 			tm.dedupMap.Delete(msg.ID)
 			return fmt.Errorf("sync publish failed: %w", err)
 		}
 	} else {
-		util.Debug("Calling t.Publish")
 		t.Publish(msg)
 	}
 
 	elapsed := time.Since(start).Seconds()
 	metrics.MessagesProcessed.Inc()
 	metrics.LatencyHist.Observe(elapsed)
-
-	util.Debug("Publish completed successfully")
 	return nil
 }
 
@@ -160,15 +155,19 @@ func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consu
 	if t == nil {
 		return nil
 	}
-	return t.RegisterConsumerGroup(groupName, consumerCount)
-}
 
-func (tm *TopicManager) Consume(topicName, groupName string, consumerIdx int) <-chan types.Message {
-	t := tm.GetTopic(topicName)
-	if t == nil {
-		return nil
+	group := t.RegisterConsumerGroup(groupName, consumerCount)
+
+	if tm.coordinator != nil {
+		if err := tm.coordinator.RegisterGroup(topicName, groupName, len(t.Partitions)); err != nil {
+			return nil
+		}
+
+		assignments := tm.coordinator.GetAssignments(groupName)
+		t.applyAssignments(groupName, assignments)
 	}
-	return t.Consume(groupName, consumerIdx)
+
+	return group
 }
 
 func (tm *TopicManager) Flush() {
