@@ -1,6 +1,5 @@
 APP_NAME := go-broker  
-CLI_NAME := go-broker-cli  
-BENCH_NAME := go-broker-bench  
+CLI_NAME := go-broker-cli   
   
 GO := go  
 GOLINT := golangci-lint  
@@ -76,11 +75,29 @@ e2e-coverage: e2e-build
   
 .PHONY: bench  
 bench:  
-	@echo "[MAKE] Running benchmark..."  
-	go run ./cmd/bench  
+	@echo "[MAKE] Running benchmark with real clients..."    
+	$(MAKE) build-api  
+
+	cd test/publisher && go build -o ../../bin/publisher .  
+	cd test/consumer && go build -o ../../bin/consumer .  
   
+	bin/go-broker -benchmark=true &  
+	BROKER_PID=$$!; \  
+	for i in {1..30}; do \  
+		if curl -f http://localhost:9080/health 2>/dev/null; then \  
+			echo "Broker server ready."; \  
+			break; \  
+		fi; \  
+		sleep 1; \  
+	done; \  
+	./bin/publisher -create-topic -topic bench-topic -partitions 12; \  
+	./bin/publisher -produce -topic bench-topic -messages 1000 -producers 12 & \  
+	./bin/consumer -consume -topic bench-topic -consumers 12 & \  
+	wait; \  
+	kill $$BROKER_PID || true
+
 .PHONY: build  
-build: build-api build-cli build-bench  
+build: build-api build-cli 
   
 .PHONY: build-api  
 build-api:  
@@ -91,11 +108,6 @@ build-api:
 build-cli:  
 	@echo "[MAKE] Building CLI..."  
 	CGO_ENABLED=0 GOOS=linux $(GO) build $(BUILD_FLAGS) -o bin/$(CLI_NAME) ./cmd/cli/main.go  
-  
-.PHONY: build-bench  
-build-bench:  
-	@echo "[MAKE] Building Benchmark..."  
-	CGO_ENABLED=0 GOOS=linux $(GO) build $(BUILD_FLAGS) -o bin/$(BENCH_NAME) ./cmd/bench/main.go  
   
 .PHONY: clean  
 clean:  
@@ -153,7 +165,7 @@ help:
 	@echo "  make e2e-verbose     Run E2E tests with race detection" 
 	@echo "  make e2e-logs        Show E2E test container logs" 
 	@echo "  make bench           Run benchmarks"  
-	@echo "  make build           Build all binaries (api, cli, bench)"  
+	@echo "  make build           Build all binaries (api, cli)"  
 	@echo "  make clean           Remove build artifacts"  
 	@echo "  make run             Run broker in dev mode" 
 	@echo "  make tools           Install or update development tools"  
