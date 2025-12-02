@@ -53,6 +53,10 @@ func (bc *BrokerClient) connect() error {
 		return nil
 	}
 
+	if bc.conn != nil {
+		bc.conn.Close()
+	}
+
 	conn, err := net.Dial("tcp", bc.addr)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)

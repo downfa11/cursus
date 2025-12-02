@@ -92,9 +92,13 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		data, err := os.ReadFile(*configPath)
 		if err == nil {
 			if strings.HasSuffix(*configPath, ".json") {
-				_ = json.Unmarshal(data, cfg)
+				if err := json.Unmarshal(data, cfg); err != nil {
+					log.Printf("[WARN] Failed to parse JSON config: %v", err)
+				}
 			} else {
-				_ = yaml.Unmarshal(data, cfg)
+				if err := yaml.Unmarshal(data, cfg); err != nil {
+					log.Printf("[WARN] Failed to parse YAML config: %v", err)
+				}
 			}
 		}
 	}

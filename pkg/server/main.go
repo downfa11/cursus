@@ -166,16 +166,17 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 					continue
 				}
 			} else {
+				var published int
 				for _, m := range batch.Messages {
 					msg := types.Message{Payload: m.Payload, Key: m.Payload}
 					if err := tm.Publish(batch.Topic, msg); err != nil {
-						writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+						util.Warn("Failed to publish message in batch: %v", err)
 						continue
 					}
+					published++
 				}
+				writeResponse(conn, fmt.Sprintf("OK:processed=%d", published))
 			}
-
-			writeResponse(conn, fmt.Sprintf("OK:processed=%d", len(batch.Messages)))
 			continue
 		} else {
 			if topicName == "" || payload == "" {
@@ -186,7 +187,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			}
 
 			acks, message := extractAcksAndMessage(payload)
-			msg := types.Message{Payload: message, Key: message}
+			msg := types.Message{Payload: message}
 			util.Info("Publishing message to: ID=%d, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
 
 			switch acks {
@@ -229,6 +230,9 @@ func writeResponseWithTimeout(conn net.Conn, msg string, timeout time.Duration) 
 	if _, err := conn.Write(resp); err != nil {
 		util.Error("⚠️ Write response error: %v", err)
 		return
+	}
+	if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+		util.Error("Failed to reset write deadline: %v", err)
 	}
 }
 

@@ -159,7 +159,7 @@ func (t *Topic) PublishBatchSync(topicName string, msgs []types.Message) error {
 	}
 	partitioned := make(map[int][]types.Message)
 
-	t.mu.RLock()
+	t.mu.Lock()
 	for _, msg := range msgs {
 		var idx int
 		if msg.Key != "" {
@@ -171,7 +171,7 @@ func (t *Topic) PublishBatchSync(topicName string, msgs []types.Message) error {
 		}
 		partitioned[idx] = append(partitioned[idx], msg)
 	}
-	t.mu.RUnlock()
+	t.mu.Unlock()
 	for idx, pm := range partitioned {
 		p := t.Partitions[idx]
 

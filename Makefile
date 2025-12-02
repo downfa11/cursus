@@ -74,12 +74,15 @@ e2e-coverage: e2e-build
 	@echo "E2E coverage report saved to e2e-coverage.out"  
   
 .PHONY: bench
-bench: e2e-build
-	@echo "[MAKE] Running benchmark with docker-compose..."
-	timeout 60s docker compose -f test/e2e/docker-compose.yml up --build --remove-orphans
-	@echo "[MAKE] Containers finished or timed out"
-	docker compose -f test/e2e/docker-compose.yml logs
-	docker compose -f test/e2e/docker-compose.yml down -v
+bench:
+	@bash -c '\
+	set +e; \
+	echo "[MAKE] Running benchmark with docker-compose..."; \
+	timeout 60s docker compose -f test/e2e/docker-compose.yml up --build --remove-orphans; \
+	echo "[MAKE] Containers finished or timed out"; \
+	docker compose -f test/e2e/docker-compose.yml logs; \
+	docker compose -f test/e2e/docker-compose.yml down -v; \
+	'
 
 .PHONY: build  
 build: build-api build-cli 

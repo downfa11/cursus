@@ -219,6 +219,7 @@ func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consu
 
 	if tm.coordinator != nil {
 		if err := tm.coordinator.RegisterGroup(topicName, groupName, len(t.Partitions)); err != nil {
+			util.Warn("Failed to register group '%s' with coordinator: %v", groupName, err)
 			return nil
 		}
 

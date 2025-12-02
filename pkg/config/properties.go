@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -188,17 +187,13 @@ func LoadConfig() (*Config, error) {
 
 func overrideEnvInt(target *int, key string) {
 	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			*target = i
-		}
+		*target = util.ParseInt(v, *target)
 	}
 }
 
 func overrideEnvBool(target *bool, key string) {
 	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			*target = b
-		}
+		*target = util.ParseBool(v, *target)
 	}
 }
 

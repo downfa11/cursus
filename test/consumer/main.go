@@ -204,6 +204,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				time.Sleep(pc.consumer.config.PollInterval)
+				i-- // Don't count timeout against batch size
 				continue
 			}
 			if err == io.EOF {
@@ -544,9 +545,9 @@ func (c *Consumer) startStreaming() error {
 						atomic.AddInt64(&pc.consumer.bmMsgCount, 1)
 					}
 
-					c.mu.Lock()
-					c.offsets[pid]++
-					c.mu.Unlock()
+					pc.mu.Lock()
+					pc.offset++
+					pc.mu.Unlock()
 				}
 			}
 		}(pid, pc)
