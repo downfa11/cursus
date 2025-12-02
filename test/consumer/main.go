@@ -239,16 +239,14 @@ func (pc *PartitionConsumer) processMessage(msgBytes []byte) {
 		pc.incrementPartitionCount()
 	}
 
-	const chunkSize = 20
+	const maxLen = 40
 	msgStr := string(msgBytes)
 	runes := []rune(msgStr)
 
-	for start := 0; start < len(runes); start += chunkSize {
-		end := start + chunkSize
-		if end > len(runes) {
-			end = len(runes)
-		}
-		log.Printf("Partition [%d] %s", pc.partitionID, string(runes[start:end]))
+	if len(runes) > maxLen {
+		log.Printf("Partition [%d] %s...", pc.partitionID, string(runes[:maxLen]))
+	} else {
+		log.Printf("Partition [%d] %s", pc.partitionID, msgStr)
 	}
 }
 
@@ -644,8 +642,8 @@ func (c *Consumer) PrintBenchmarkSummary() {
 
 	fmt.Println("=== CONSUMER BENCHMARK SUMMARY ===")
 	fmt.Printf("Total messages consumed: %d\n", total)
-	fmt.Printf("Elapsed time: %v\n", duration)
-	fmt.Printf("Approx TPS: %.2f\n", tps)
+	fmt.Printf("Consume elapsed time: %v\n", duration)
+	fmt.Printf("Consume Throughput: %.2f msg/s\n", tps)
 	fmt.Println("--- Partition Message Counts ---")
 	for _, pc := range c.partitionConsumers {
 		count := int64(0)

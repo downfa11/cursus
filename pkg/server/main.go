@@ -24,7 +24,6 @@ import (
 
 const (
 	maxWorkers             = 1000
-	readDeadline           = 5 * time.Minute // Read deadline defined as a constant
 	DefaultHealthCheckPort = 9080
 )
 
@@ -98,7 +97,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 	writeTimeout := 10 * time.Second
 
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
 			util.Error("⚠️ SetReadDeadline error: %v", err)
 			return
 		}

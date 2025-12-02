@@ -118,9 +118,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		if count, err := dh.SendCurrentSegmentToConn(conn); err == nil {
 			if count > 0 {
 				lastOffset := actualOffset + uint64(count)
-				if err := t.CommitOffset(ctx.ConsumerGroup, partition, lastOffset); err != nil {
-					util.Warn("Failed to commit offset to topic '%s', %v", topicName, err)
-				}
 				if ch.Coordinator != nil {
 					if err := ch.Coordinator.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
 						util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
@@ -151,13 +148,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	}
 
 	if streamedCount > 0 {
-		if err := t.CommitOffset(ctx.ConsumerGroup, partition, lastOffset); err != nil {
-			util.Warn("Failed to commit offset to topic '%s' for group '%s': %v", topicName, ctx.ConsumerGroup, err)
-		} else {
-			util.Debug("Successfully committed offset %d to topic for group '%s', topic '%s', partition %d",
-				lastOffset, ctx.ConsumerGroup, topicName, partition)
-		}
-
 		if ch.Coordinator != nil {
 			if err := ch.Coordinator.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
 				util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
@@ -763,11 +753,6 @@ func (ch *CommandHandler) resolveOffset(
 	autoOffsetReset string,
 ) (uint64, error) {
 
-	t := ch.TopicManager.GetTopic(topicName)
-	if t == nil {
-		return 0, fmt.Errorf("topic '%s' does not exist", topicName)
-	}
-
 	dh, err := ch.DiskManager.GetHandler(topicName, partition)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get disk handler: %w", err)
@@ -775,17 +760,11 @@ func (ch *CommandHandler) resolveOffset(
 
 	actualOffset := requestedOffset
 	if requestedOffset == 0 {
-		if committedOffset, ok := t.GetCommittedOffset(groupName, partition); ok {
-			actualOffset = committedOffset
-			util.Debug("Using topic committed offset %d for group '%s'", actualOffset, groupName)
-			return actualOffset, nil
-		}
-
 		if ch.Coordinator != nil {
 			savedOffset, err := ch.Coordinator.GetOffset(groupName, topicName, partition)
 			if err == nil {
 				actualOffset = savedOffset
-				util.Debug("Using OffsetManager saved offset %d for group '%s'", actualOffset, groupName)
+				util.Debug("Saved offset %d for group '%s'", actualOffset, groupName)
 				return actualOffset, nil
 			}
 		}

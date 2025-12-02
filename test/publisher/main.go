@@ -678,11 +678,17 @@ func (p *Publisher) Flush() {
 
 	for part := 0; part < p.partitions; part++ {
 		buf := p.buffers[part]
-		buf.mu.Lock()
-		for len(buf.msgs) > 0 || atomic.LoadInt32(&p.inFlight[part]) > 0 {
-			buf.cond.Wait()
+		for {
+			buf.mu.Lock()
+			inFlight := atomic.LoadInt32(&p.inFlight[part])
+			remaining := len(buf.msgs)
+			buf.mu.Unlock()
+
+			if remaining == 0 && inFlight == 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		buf.mu.Unlock()
 	}
 }
 
@@ -731,12 +737,12 @@ func printBenchmarkSummaryFixed(
 	messagesPerSec := float64(sentMessages) / seconds
 
 	fmt.Println("=== BENCHMARK SUMMARY ===")
-	fmt.Printf("Partitions            : %d\n", len(partitionStats))
-	fmt.Printf("Total Batches         : %d\n", totalBatches)
-	fmt.Printf("Total Messages        : %d\n", sentMessages)
-	fmt.Printf("Total Time            : %.3fs\n", totalDuration.Seconds())
-	fmt.Printf("Batch Throughput      : %.2f batches/s\n", batchesPerSec)
-	fmt.Printf("Message Throughput    : %.2f msg/s\n", messagesPerSec)
+	fmt.Printf("Partitions                 : %d\n", len(partitionStats))
+	fmt.Printf("Total Batches              : %d\n", totalBatches)
+	fmt.Printf("Total messages published   : %d\n", sentMessages)
+	fmt.Printf("Publish elapsed Time       : %.3fs\n", totalDuration.Seconds())
+	fmt.Printf("Publish Batch Throughput   : %.2f batches/s\n", batchesPerSec)
+	fmt.Printf("Publish Message Throughput : %.2f msg/s\n", messagesPerSec)
 	fmt.Println()
 
 	fmt.Println("Partition Breakdown:")
