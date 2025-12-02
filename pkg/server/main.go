@@ -168,7 +168,10 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			} else {
 				for _, m := range batch.Messages {
 					msg := types.Message{Payload: m.Payload, Key: m.Payload}
-					tm.Publish(batch.Topic, msg)
+					if err := tm.Publish(batch.Topic, msg); err != nil {
+						writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+						continue
+					}
 				}
 			}
 
