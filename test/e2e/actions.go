@@ -101,7 +101,7 @@ func (a *Actions) JoinGroup() *Actions {
 	a.ctx.t.Logf("Joining group '%s' for topic '%s'...", a.ctx.consumerGroup, a.ctx.topic)
 	client := a.ctx.getClient()
 
-	_, _, err := client.joinGroup(a.ctx.topic, a.ctx.consumerGroup)
+	_, _, err := client.JoinGroup(a.ctx.topic, a.ctx.consumerGroup)
 	if err != nil {
 		a.ctx.t.Fatalf("Group join failed: %v", err)
 	}

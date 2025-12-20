@@ -12,7 +12,6 @@ func MessagesReplicatedToAllNodes() e2e.Expectation {
 		client := e2e.NewBrokerClient(ctx.GetBrokerAddr())
 		defer client.Close()
 
-		// Get the highest offset from leader
 		leaderOffsets := make(map[int]uint64)
 		for partition := 0; partition < ctx.GetPartitions(); partition++ {
 			offset, err := client.FetchCommittedOffset(ctx.GetTopic(), partition, ctx.GetConsumerGroup())

@@ -1,0 +1,76 @@
+services:  
+  broker1:  
+    build:  
+      context: ../.. 
+      dockerfile: Dockerfile  
+    container_name: broker1  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/cluster-config.yaml  
+      - NODE_ID=1  
+    ports:  
+      - "9000:9000"  
+      - "9100:9100"  
+      - "9080:9080"  
+    networks:  
+      - cluster_network  
+    healthcheck:  
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]  
+      interval: 2s  
+      timeout: 1s  
+      retries: 3  
+  
+  broker2:  
+    build:  
+      context: ../..
+      dockerfile: Dockerfile  
+    container_name: broker2  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/cluster-config.yaml  
+      - NODE_ID=2  
+    ports:  
+      - "9001:9000"  
+      - "9101:9100"  
+      - "9081:9080"  
+    networks:  
+      - cluster_network  
+    depends_on:  
+      broker1:  
+        condition: service_healthy  
+  
+  broker3:  
+    build:  
+      context: ../..
+      dockerfile: Dockerfile  
+    container_name: broker3  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/cluster-config.yaml  
+      - NODE_ID=3  
+    ports:  
+      - "9002:9000"  
+      - "9102:9100"  
+      - "9082:9080"  
+    networks:  
+      - cluster_network  
+    depends_on:  
+      broker1:  
+        condition: service_healthy  
+  
+  broker4:  
+    build:  
+      context: ../..  
+      dockerfile: Dockerfile  
+    container_name: broker4  
+    command: ./broker  
+    ports:  
+      - "9003:9000"  
+      - "9083:9080"  
+      - "9103:9100"  
+    networks:  
+      - cluster_network
+
+networks:  
+  cluster_network:  
+    name: cluster_network

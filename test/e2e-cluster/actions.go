@@ -23,20 +23,13 @@ func (c *ClusterTestContext) WhenCluster() *ClusterActions {
 }
 
 func (a *ClusterActions) StartCluster() *ClusterActions {
-	a.ctx.GetT().Logf("Starting %d-node cluster...", a.ctx.clusterSize)
-
-	cmd := exec.Command("docker", "compose", "-f", "test/e2e-cluster/cluster-compose.yml", "up", "-d")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		a.ctx.GetT().Logf("Failed to start cluster: %v\nOutput: %s", err, string(output))
-		return a
-	}
+	a.ctx.GetT().Logf("Checking %d-node cluster health...", a.ctx.clusterSize)
 
 	if err := a.checkAllNodesHealth(); err != nil {
-		a.ctx.GetT().Logf("Cluster health check failed: %v", err)
-		return a
+		a.ctx.GetT().Fatalf("Cluster health check failed: %v", err)
 	}
 
-	a.ctx.GetT().Log("Cluster started successfully")
+	a.ctx.GetT().Log("Cluster is ready")
 	return a
 }
 
@@ -104,6 +97,11 @@ func (a *ClusterActions) ConsumeMessages() *ClusterActions {
 func (a *ClusterActions) ConsumeMessagesUpToOffset(offset uint64) *ClusterActions {
 	client := a.ctx.TestContext.GetClient()
 	a.ctx.GetT().Logf("Consuming messages up to offset %d...", offset)
+
+	if _, _, err := client.JoinGroup(a.ctx.TestContext.GetTopic(), a.ctx.TestContext.GetConsumerGroup()); err != nil {
+		a.ctx.GetT().Logf("Failed to join consumer group: %v", err)
+		return a
+	}
 
 	for _, partition := range a.ctx.TestContext.GetAssignedPartitions() {
 		messages, err := client.ConsumeMessages(
@@ -177,10 +175,12 @@ func (a *ClusterActions) SimulateLeaderFailure() *ClusterActions {
 	}
 
 	time.Sleep(5 * time.Second)
+
 	for i := 1; i < a.ctx.clusterSize; i++ {
 		port := 9080 + i
 		if err := a.waitForNodeHealth(i, port); err == nil {
 			a.ctx.GetT().Logf("Node %d appears to be the new leader", i)
+			a.ctx.TestContext.SetBrokerAddr(fmt.Sprintf("localhost:%d", port))
 			break
 		}
 	}
@@ -204,7 +204,7 @@ func (a *ClusterActions) SimulateFollowerFailure() *ClusterActions {
 func (a *ClusterActions) AddNodeToCluster() *ClusterActions {
 	a.ctx.GetT().Log("Adding new node to cluster...")
 
-	cmd := exec.Command("docker", "compose", "-f", "test/e2e-cluster/cluster-compose.yml", "up", "-d", "broker4")
+	cmd := exec.Command("docker", "compose", "-f", "test/e2e-cluster/docker-compose.yml", "up", "-d", "broker4")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		a.ctx.GetT().Logf("Failed to add new node: %v\nOutput: %s", err, string(output))
 		return a

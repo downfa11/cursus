@@ -123,7 +123,7 @@ func (bc *BrokerClient) FetchCommittedOffset(topic string, partition int, groupI
 }
 
 // joinGroup executes the JOIN_GROUP command and extracts generation and memberID.
-func (bc *BrokerClient) joinGroup(topic, group string) (int, string, error) {
+func (bc *BrokerClient) JoinGroup(topic, group string) (int, string, error) {
 	bc.mu.Lock()
 	if bc.memberID == "" {
 		bc.memberID = fmt.Sprintf("e2e-consumer-%d", time.Now().UnixNano())

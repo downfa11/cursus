@@ -75,6 +75,89 @@ func (ctx *TestContext) getClient() *BrokerClient {
 	return ctx.client
 }
 
+// GetNumMessages returns the current number of messages setting
+func (ctx *TestContext) GetNumMessages() int {
+	return ctx.numMessages
+}
+
+// SetNumMessages sets the number of messages (for temporary modification)
+func (ctx *TestContext) SetNumMessages(num int) *TestContext {
+	ctx.numMessages = num
+	return ctx
+}
+
+func (ctx *TestContext) SetBrokerAddr(addr string) {
+	ctx.brokerAddr = addr
+	if ctx.client != nil {
+		ctx.client.Close()
+		ctx.client = nil
+	}
+}
+
+// GetBrokerAddr returns the broker address
+func (ctx *TestContext) GetBrokerAddr() string {
+	return ctx.brokerAddr
+}
+
+// GetTopic returns the topic name
+func (ctx *TestContext) GetTopic() string {
+	return ctx.topic
+}
+
+// GetPartitions returns the number of partitions
+func (ctx *TestContext) GetPartitions() int {
+	return ctx.partitions
+}
+
+// GetConsumerGroup returns the consumer group name
+func (ctx *TestContext) GetConsumerGroup() string {
+	return ctx.consumerGroup
+}
+
+// GetPublishedCount returns the number of published messages
+func (ctx *TestContext) GetPublishedCount() int {
+	return ctx.publishedCount
+}
+
+// GetConsumedCount returns the number of consumed messages
+func (ctx *TestContext) GetConsumedCount() int {
+	return ctx.consumedCount
+}
+
+// GetAcks returns the acks setting
+func (ctx *TestContext) GetAcks() string {
+	return ctx.acks
+}
+
+// GetClient returns the broker client
+func (ctx *TestContext) GetClient() *BrokerClient {
+	return ctx.getClient()
+}
+
+// GetAssignedPartitions returns the assigned partitions
+func (ctx *TestContext) GetAssignedPartitions() []int {
+	return ctx.assignedPartitions
+}
+
+// SetConsumedCount sets the consumed message count
+func (ctx *TestContext) SetConsumedCount(count int) {
+	ctx.consumedCount = count
+}
+
+// GetMemberID returns the consumer member ID
+func (bc *BrokerClient) GetMemberID() string {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.memberID
+}
+
+// GetGeneration returns the consumer generation
+func (bc *BrokerClient) GetGeneration() int {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.generation
+}
+
 // Configuration methods (fluent interface)
 func (ctx *TestContext) WithTopic(topic string) *TestContext {
 	ctx.topic = topic

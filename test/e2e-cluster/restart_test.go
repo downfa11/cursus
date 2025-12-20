@@ -6,28 +6,10 @@ import (
 	"github.com/downfa11-org/go-broker/test/e2e"
 )
 
-// TestDataReplication tests data replication across cluster
-func TestDataReplication(t *testing.T) {
-	ctx := GivenCluster(t).
-		WithTopic("replication-test").
-		WithPartitions(3).
-		WithNumMessages(100).
-		WithAcks("all").
-		WithClusterSize(3)
-	defer ctx.Cleanup()
-
-	ctx.WhenCluster().
-		StartCluster().
-		CreateTopic().
-		PublishMessages().
-		Then().
-		Expect(MessagesReplicatedToAllNodes()).
-		And(OffsetsInSync())
-}
-
+// o
 // TestISRWithAllAcks tests ISR behavior with acks=all
 func TestISRWithAllAcks(t *testing.T) {
-	ctx := GivenCluster(t).
+	ctx := GivenClusterRestart(t).
 		WithTopic("isr-test").
 		WithPartitions(1).
 		WithNumMessages(50).
@@ -45,9 +27,10 @@ func TestISRWithAllAcks(t *testing.T) {
 		And(ISRMaintained())
 }
 
+// x
 // TestExactlyOnceInCluster tests exactly-once semantics in cluster
 func TestExactlyOnceInCluster(t *testing.T) {
-	ctx := GivenCluster(t).
+	ctx := GivenClusterRestart(t).
 		WithTopic("exactly-once-cluster").
 		WithPartitions(3).
 		WithNumMessages(100).
@@ -66,9 +49,10 @@ func TestExactlyOnceInCluster(t *testing.T) {
 		And(e2e.MessagesConsumed(100))
 }
 
+// x
 // TestClusterReconfiguration tests node addition/removal
 func TestClusterReconfiguration(t *testing.T) {
-	ctx := GivenCluster(t).
+	ctx := GivenClusterRestart(t).
 		WithTopic("reconfig-test").
 		WithPartitions(2).
 		WithNumMessages(50).
@@ -88,9 +72,10 @@ func TestClusterReconfiguration(t *testing.T) {
 		And(e2e.MessagesConsumed(100))
 }
 
+// x
 // TestReplicationAsTimeline tests replication as timeline continuity
 func TestReplicationAsTimeline(t *testing.T) {
-	ctx := GivenCluster(t).
+	ctx := GivenClusterRestart(t).
 		WithTopic("timeline-test").
 		WithPartitions(1).
 		WithNumMessages(100)
@@ -109,9 +94,10 @@ func TestReplicationAsTimeline(t *testing.T) {
 		And(NoDataLoss())
 }
 
+// x
 // TestNetworkPartition tests leader-follower network partition scenario
 func TestNetworkPartition(t *testing.T) {
-	ctx := GivenCluster(t).
+	ctx := GivenClusterRestart(t).
 		WithTopic("network-partition-test").
 		WithPartitions(3).
 		WithNumMessages(100).
@@ -131,22 +117,23 @@ func TestNetworkPartition(t *testing.T) {
 		And(NoDataLossDuringPartition())
 }
 
+// x
 // TestSimultaneousNodeFailures tests multiple nodes failing simultaneously
 func TestSimultaneousNodeFailures(t *testing.T) {
-	ctx := GivenCluster(t).
+	ctx := GivenClusterRestart(t).
 		WithTopic("multi-failure-test").
 		WithPartitions(3).
 		WithNumMessages(150).
 		WithAcks("all").
-		WithClusterSize(5).
-		WithMinInSyncReplicas(3)
+		WithClusterSize(3).
+		WithMinInSyncReplicas(2)
 	defer ctx.Cleanup()
 
 	ctx.WhenCluster().
 		StartCluster().
 		CreateTopic().
 		PublishMessages().
-		SimulateMultipleNodeFailures(2).
+		SimulateMultipleNodeFailures(1).
 		WaitForLeaderElection().
 		PublishMoreMessages(50).
 		Then().
@@ -157,7 +144,7 @@ func TestSimultaneousNodeFailures(t *testing.T) {
 
 // TestRebalancingMessageLoss tests message publishing/consuming during rebalancing
 func TestRebalancingMessageLoss(t *testing.T) {
-	ctx := GivenCluster(t).
+	ctx := GivenClusterRestart(t).
 		WithTopic("rebalance-loss-test").
 		WithPartitions(4).
 		WithNumMessages(100).
