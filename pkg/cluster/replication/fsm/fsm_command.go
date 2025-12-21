@@ -3,6 +3,7 @@ package fsm
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/types"
@@ -293,5 +294,22 @@ func (f *BrokerFSM) applyBatchOffsetSyncCommand(jsonData string) interface{} {
 	}
 
 	util.Debug("FSM: Synced BATCH_OFFSET group=%s topic=%s count=%d", cmd.Group, cmd.Topic, len(cmd.Offsets))
+	return nil
+}
+
+func (f *BrokerFSM) applyJoinGroupCommand(data string) interface{} {
+	var info BrokerInfo
+	if err := json.Unmarshal([]byte(data), &info); err != nil {
+		return fmt.Errorf("failed to unmarshal join info: %w", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	info.LastSeen = time.Now()
+	info.Status = "active"
+	f.brokers[info.ID] = &info
+
+	util.Info("FSM: Member %s added to registry", info.ID)
 	return nil
 }

@@ -231,7 +231,10 @@ func (a *ClusterActions) RemoveNodeFromCluster() *ClusterActions {
 	}
 
 	cmd = exec.Command("docker", "rm", nodeToRemove)
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		a.ctx.GetT().Logf("❌ Failed to run command: %v", err)
+		return a
+	}
 
 	a.ctx.clusterSize--
 	a.ctx.GetT().Log("Node removed successfully")
@@ -254,9 +257,15 @@ func (c *ClusterActions) SimulateNetworkPartition() *ClusterActions {
 
 	// todo.
 	cmd := exec.Command("docker", "exec", "broker1", "iptables", "-A", "INPUT", "-s", "172.20.0.3", "-j", "DROP")
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		c.ctx.GetT().Logf("❌ Failed to run command: %v", err)
+		return c
+	}
 	cmd = exec.Command("docker", "exec", "broker1", "iptables", "-A", "INPUT", "-s", "172.20.0.4", "-j", "DROP")
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		c.ctx.GetT().Logf("❌ Failed to run command: %v", err)
+		return c
+	}
 
 	return c
 }
@@ -274,9 +283,15 @@ func (c *ClusterActions) HealNetworkPartition() *ClusterActions {
 
 	// todo.
 	cmd := exec.Command("docker", "exec", "broker1", "iptables", "-D", "INPUT", "-s", "172.20.0.3", "-j", "DROP")
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		c.ctx.GetT().Logf("❌ Failed to run command: %v", err)
+		return c
+	}
 	cmd = exec.Command("docker", "exec", "broker1", "iptables", "-D", "INPUT", "-s", "172.20.0.4", "-j", "DROP")
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		c.ctx.GetT().Logf("❌ Failed to run command: %v", err)
+		return c
+	}
 
 	time.Sleep(2 * time.Second)
 	return c

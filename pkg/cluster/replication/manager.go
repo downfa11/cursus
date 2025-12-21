@@ -234,6 +234,10 @@ func (rm *RaftReplicationManager) GetFSM() *fsm.BrokerFSM {
 	return rm.fsm
 }
 
+func (rm *RaftReplicationManager) GetConfiguration() raft.ConfigurationFuture {
+	return rm.raft.GetConfiguration()
+}
+
 func (rm *RaftReplicationManager) ApplyCommand(prefix string, data []byte) error {
 	fullCmd := []byte(fmt.Sprintf("%s:%s", prefix, string(data)))
 	future := rm.raft.Apply(fullCmd, 5*time.Second)

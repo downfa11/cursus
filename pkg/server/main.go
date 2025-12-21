@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
@@ -34,6 +35,8 @@ var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
 func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
@@ -90,7 +93,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 			}
 		}()
 
-		cc = clusterController.NewClusterController(cfg, rm, sd)
+		cc = clusterController.NewClusterController(ctx, cfg, rm, sd)
 
 		go func() {
 			util.Info("🔄 Starting cluster leader election monitor...")

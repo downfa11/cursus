@@ -33,7 +33,10 @@ func GivenClusterRestart(t *testing.T) *ClusterTestContext {
 	}
 
 	t.Cleanup(func() {
-		exec.Command("docker-compose", "-f", "docker-compose.yml", "down", "-v").Run()
+		cmd := exec.Command("docker-compose", "-f", "docker-compose.yml", "down", "-v")
+		if err := cmd.Run(); err != nil {
+			t.Logf("Cleanup warning: failed to bring down docker-compose: %v", err)
+		}
 	})
 
 	time.Sleep(15 * time.Second)

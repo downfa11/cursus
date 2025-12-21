@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
@@ -14,7 +15,7 @@ type ClusterController struct {
 	Router      *ClusterRouter
 }
 
-func NewClusterController(cfg *config.Config, rm *replication.RaftReplicationManager, sd *ServiceDiscovery) *ClusterController {
+func NewClusterController(ctx context.Context, cfg *config.Config, rm *replication.RaftReplicationManager, sd *ServiceDiscovery) *ClusterController {
 	brokerID := fmt.Sprintf("%s-%d", cfg.AdvertisedHost, cfg.BrokerPort)
 	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.BrokerPort)
 
@@ -24,12 +25,13 @@ func NewClusterController(cfg *config.Config, rm *replication.RaftReplicationMan
 		Election:    NewControllerElection(rm),
 		Router:      NewClusterRouter(brokerID, localAddr, nil, rm, cfg.BrokerPort),
 	}
-	cc.Start()
+	cc.Start(ctx)
 	return cc
 }
 
-func (cc *ClusterController) Start() {
+func (cc *ClusterController) Start(ctx context.Context) {
 	cc.Election.Start()
+	cc.Discovery.StartReconciler(ctx)
 }
 
 func (cc *ClusterController) GetClusterLeader() (string, error) {

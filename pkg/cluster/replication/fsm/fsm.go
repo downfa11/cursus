@@ -104,6 +104,8 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		res = f.applyRegisterCommand(strings.TrimPrefix(data, "REGISTER:"))
 	case strings.HasPrefix(data, "DEREGISTER:"):
 		res = f.applyDeregisterCommand(strings.TrimPrefix(data, "DEREGISTER:"))
+	case strings.HasPrefix(data, "JOIN_GROUP:"):
+		res = f.applyJoinGroupCommand(strings.TrimPrefix(data, "JOIN_GROUP:"))
 	case strings.HasPrefix(data, "MESSAGE:"):
 		res = f.applyMessageCommand(strings.TrimPrefix(data, "MESSAGE:"))
 	case strings.HasPrefix(data, "BATCH:"):
