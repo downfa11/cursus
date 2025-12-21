@@ -154,6 +154,9 @@ func (c *Coordinator) updateOffsetPartitionCount() {
 }
 
 func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, offset uint64, generation int, memberID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	group := c.groups[groupName] // *GroupMetadata
 	if group == nil {
 		return fmt.Errorf("group not found")
@@ -186,9 +189,6 @@ func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, 
 	if err != nil {
 		return fmt.Errorf("failed to marshal offset commit: %w", err)
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if err := c.offsetPublisher.Publish(c.offsetTopic,
 		&types.Message{

@@ -118,8 +118,9 @@ func (f *BrokerFSM) applySingle(cmd *MessageCommand) interface{} {
 	msg := &cmd.Messages[0]
 
 	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	lastSeq, ok := f.producerState[msg.ProducerID]
-	f.mu.Unlock()
 
 	resp := types.AckResponse{
 		Status:        "OK",
@@ -144,10 +145,7 @@ func (f *BrokerFSM) applySingle(cmd *MessageCommand) interface{} {
 		return errorAckResponse(err.Error(), msg.ProducerID, msg.Epoch)
 	}
 
-	f.mu.Lock()
 	f.producerState[msg.ProducerID] = msg.SeqNum
-	f.mu.Unlock()
-
 	return resp
 }
 
@@ -156,8 +154,9 @@ func (f *BrokerFSM) applyBatch(cmd *MessageCommand) interface{} {
 	last := cmd.Messages[len(cmd.Messages)-1]
 
 	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	lastSeq, exists := f.producerState[first.ProducerID]
-	f.mu.Unlock()
 
 	if exists && last.SeqNum <= lastSeq {
 		util.Debug("Duplicate batch detected for producer %s (lastSeq: %d, batchEnd: %d)", first.ProducerID, lastSeq, last.SeqNum)
@@ -180,9 +179,7 @@ func (f *BrokerFSM) applyBatch(cmd *MessageCommand) interface{} {
 		return errorAckResponse(fmt.Sprintf("batch persist failed: %v", err), m.ProducerID, m.Epoch)
 	}
 
-	f.mu.Lock()
 	f.producerState[first.ProducerID] = last.SeqNum
-	f.mu.Unlock()
 
 	return types.AckResponse{
 		Status:        "OK",
@@ -217,7 +214,7 @@ func (f *BrokerFSM) applyGroupSyncCommand(jsonData string) interface{} {
 		if f.cd.GetGroup(cmd.Group) == nil {
 			util.Info("FSM: Group '%s' not found, creating implicitly for topic '%s'", cmd.Group, cmd.Topic)
 
-			partitionCount := 4 // default
+			var partitionCount int
 			if t := f.tm.GetTopic(cmd.Topic); t != nil {
 				partitionCount = len(t.Partitions)
 			}
@@ -259,6 +256,7 @@ func (f *BrokerFSM) applyOffsetSyncCommand(jsonData string) interface{} {
 	}
 
 	if f.cd == nil {
+		util.Warn("Skipping offset synchronization: Coordinator is nil (Topic: %s, Partition: %d)", cmd.Topic, cmd.Partition)
 		return nil
 	}
 

@@ -60,6 +60,7 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 		payload := map[string]interface{}{
 			"name":       topicName,
 			"partitions": partitions,
+			// todo. "leader_id": partition leader
 		}
 
 		_, err := ch.applyAndWait("TOPIC", payload)
