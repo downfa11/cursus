@@ -11,15 +11,15 @@ import (
 
 func (pc *PartitionConsumer) ensureConnection() error {
 	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
 	if pc.conn != nil {
+		pc.mu.Unlock()
 		return nil
 	}
-
 	if pc.closed {
+		pc.mu.Unlock()
 		return fmt.Errorf("partition consumer closed")
 	}
+	pc.mu.Unlock()
 
 	bo := newBackoff(
 		time.Duration(pc.consumer.config.ConnectRetryBackoffMS)*time.Millisecond, 5*time.Second,
@@ -27,9 +27,23 @@ func (pc *PartitionConsumer) ensureConnection() error {
 
 	var err error
 	for attempt := 0; attempt < pc.consumer.config.MaxConnectRetries; attempt++ {
+		pc.mu.Lock()
+		if pc.closed {
+			pc.mu.Unlock()
+			return fmt.Errorf("partition consumer closed during connection attempts")
+		}
+		pc.mu.Unlock()
+
 		conn, broker, connectErr := pc.consumer.client.ConnectWithFailover()
 		if connectErr == nil {
+			pc.mu.Lock()
+			if pc.closed {
+				conn.Close()
+				pc.mu.Unlock()
+				return fmt.Errorf("partition consumer closed")
+			}
 			pc.conn = conn
+			pc.mu.Unlock()
 			util.Info("Partition [%d] connected to %s", pc.partitionID, broker)
 			return nil
 		}
@@ -94,35 +108,32 @@ func (pc *PartitionConsumer) printConsumedMessage(batch *types.Batch) {
 	}
 
 	util.Info("📥 Partition [%d] Batch Received: Topic='%s', TotalMessages=%d", pc.partitionID, batch.Topic, len(batch.Messages))
+	util.Info("   ├─ Message Details (First 5 messages):")
 
-	if len(batch.Messages) > 0 {
-		util.Info("   ├─ Message Details (First 5 messages):")
+	limit := 5
+	if len(batch.Messages) < limit {
+		limit = len(batch.Messages)
+	}
 
-		limit := 5
-		if len(batch.Messages) < limit {
-			limit = len(batch.Messages)
+	for i := 0; i < limit; i++ {
+		msg := batch.Messages[i]
+
+		payload := msg.Payload
+		if len(payload) > 50 {
+			payload = payload[:50] + "..."
 		}
 
-		for i := 0; i < limit; i++ {
-			msg := batch.Messages[i]
-
-			payload := msg.Payload
-			if len(payload) > 50 {
-				payload = payload[:50] + "..."
-			}
-
-			if msg.Key == "" {
-				util.Info("   │  └─ Msg %d: Payload='%s'", i, payload)
-			} else {
-				util.Info("   │  └─ Msg %d: Key=%s, Payload='%s'", i, msg.Key, payload)
-			}
-		}
-
-		if len(batch.Messages) > 5 {
-			util.Info("   └─ ... and %d more messages.", len(batch.Messages)-5)
+		if msg.Key == "" {
+			util.Info("   │  └─ Msg %d: Payload='%s'", i, payload)
 		} else {
-			util.Info("   └─ All messages listed above.")
+			util.Info("   │  └─ Msg %d: Key=%s, Payload='%s'", i, msg.Key, payload)
 		}
+	}
+
+	if len(batch.Messages) > 5 {
+		util.Info("   └─ ... and %d more messages.", len(batch.Messages)-5)
+	} else {
+		util.Info("   └─ All messages listed above.")
 	}
 }
 

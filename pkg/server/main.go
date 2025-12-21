@@ -82,9 +82,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 			return fmt.Errorf("failed to create raft replication manager: %w", err)
 		}
 
-		sDiscovery := clusterController.NewServiceDiscovery(rm, brokerID, localAddr)
-		sd := &sDiscovery
-
+		sd := clusterController.NewServiceDiscovery(rm, brokerID, localAddr)
 		discoveryAddr := fmt.Sprintf(":%d", cfg.DiscoveryPort)
 		cs := cluster.NewClusterServer(*sd)
 		go func() {

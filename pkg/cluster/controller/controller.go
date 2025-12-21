@@ -6,6 +6,7 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type ClusterController struct {
@@ -25,7 +26,7 @@ func NewClusterController(ctx context.Context, cfg *config.Config, rm *replicati
 		Election:    NewControllerElection(rm),
 		Router:      NewClusterRouter(brokerID, localAddr, nil, rm, cfg.BrokerPort),
 	}
-	cc.Start(ctx)
+
 	return cc
 }
 
@@ -51,7 +52,8 @@ func (cc *ClusterController) IsLeader() bool {
 	if cc.RaftManager != nil {
 		return cc.RaftManager.IsLeader()
 	}
-	return true
+	util.Warn("RaftManager is nil, assuming non-leader state")
+	return false
 }
 
 // todo. Delegate authorization to partition-level leader checks in future releases.

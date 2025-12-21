@@ -67,7 +67,7 @@ func (f *BrokerFSM) applyTopicCommand(data string) interface{} {
 
 	if f.tm != nil {
 		f.tm.CreateTopic(topicCmd.Name, topicCmd.Partitions)
-		util.Info("Successfully created topic '%s' with %d partitions on follower", topicCmd.Name, topicCmd.Partitions)
+		util.Info("FSM: Created topic '%s' with %d partitions", topicCmd.Name, topicCmd.Partitions)
 	}
 
 	return nil
@@ -99,6 +99,11 @@ func (f *BrokerFSM) applyMessageCommand(jsonData string) interface{} {
 	cmd, err := parseMessageCommand(jsonData)
 	if err != nil {
 		return errorAckResponse(err.Error(), "", 0)
+	}
+
+	if len(cmd.Messages) == 0 {
+		util.Error("FSM: Received message command with empty message list")
+		return errorAckResponse("empty message list", "", 0)
 	}
 
 	if err := validateMessageCommand(cmd); err != nil {
@@ -257,8 +262,9 @@ func (f *BrokerFSM) applyOffsetSyncCommand(jsonData string) interface{} {
 	}
 
 	if f.cd == nil {
-		util.Warn("Skipping offset synchronization: Coordinator is nil (Topic: %s, Partition: %d)", cmd.Topic, cmd.Partition)
-		return nil
+		err := fmt.Errorf("FSM: Coordinator is nil (skipping offset sync for Topic: %s)", cmd.Topic)
+		util.Error("%v", err)
+		return err
 	}
 
 	err := f.cd.CommitOffset(cmd.Group, cmd.Topic, cmd.Partition, cmd.Offset)
@@ -284,7 +290,9 @@ func (f *BrokerFSM) applyBatchOffsetSyncCommand(jsonData string) interface{} {
 	}
 
 	if f.cd == nil {
-		return nil
+		err := fmt.Errorf("FSM: Coordinator is nil (skipping batch offset update)")
+		util.Error("%v", err)
+		return err
 	}
 
 	err := f.cd.ApplyOffsetUpdateFromFSM(cmd.Group, cmd.Topic, cmd.Offsets)

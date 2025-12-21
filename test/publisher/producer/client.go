@@ -35,7 +35,7 @@ type ProducerClient struct {
 	conns   atomic.Pointer[[]net.Conn]
 	config  *config.PublisherConfig
 
-	leader atomic.Value
+	leader atomic.Pointer[leaderInfo]
 }
 
 func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
@@ -62,7 +62,11 @@ func NewProducerClient(partitions int, config *config.PublisherConfig) *Producer
 		config:  config,
 	}
 
-	pc.leader.Store(&leaderInfo{})
+	pc.leader.Store(&leaderInfo{
+		addr:    "",
+		updated: time.Time{},
+	})
+
 	if err := pc.loadState(); err != nil {
 		fmt.Printf("Warning: failed to load producer state: %v\n", err)
 	}
@@ -177,21 +181,23 @@ func (pc *ProducerClient) Close() error {
 }
 
 func (pc *ProducerClient) GetLeaderAddr() string {
-	info, ok := pc.leader.Load().(*leaderInfo)
-	if !ok || info.addr == "" {
+	info := pc.leader.Load()
+	if info == nil || info.addr == "" {
 		return ""
 	}
 	return info.addr
 }
 
 func (pc *ProducerClient) UpdateLeader(leaderAddr string) {
-	old := pc.leader.Load().(*leaderInfo)
-	if old.addr != leaderAddr {
-		pc.leader.Store(&leaderInfo{
-			addr:    leaderAddr,
-			updated: time.Now(),
-		})
+	old := pc.leader.Load()
+	if old != nil && old.addr == leaderAddr {
+		return
 	}
+
+	pc.leader.Store(&leaderInfo{
+		addr:    leaderAddr,
+		updated: time.Now(),
+	})
 }
 
 func (pc *ProducerClient) selectBroker() string {
@@ -199,9 +205,8 @@ func (pc *ProducerClient) selectBroker() string {
 		return ""
 	}
 
-	threshold := defaultLeaderStalenessThreshold
-	info, ok := pc.leader.Load().(*leaderInfo)
-	if ok && info.addr != "" && time.Since(info.updated) < threshold {
+	info := pc.leader.Load()
+	if info != nil && info.addr != "" && time.Since(info.updated) < defaultLeaderStalenessThreshold {
 		return info.addr
 	}
 

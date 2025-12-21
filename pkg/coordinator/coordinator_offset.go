@@ -39,9 +39,6 @@ func (c *Coordinator) CommitOffset(group, topic string, partition int, offset ui
 		return fmt.Errorf("failed to marshal offset commit: %w", err)
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
 		Payload: string(payload),
 		Key:     fmt.Sprintf("%s-%s-%d", group, topic, partition),
@@ -49,6 +46,8 @@ func (c *Coordinator) CommitOffset(group, topic string, partition int, offset ui
 		return err
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.storeOffsetInMemory(group, topic, partition, offset)
 	return nil
 }
@@ -137,52 +136,54 @@ func (c *Coordinator) GetOffset(group, topic string, partition int) (uint64, boo
 // updateOffsetPartitionCount updates the number of partitions for the internal offset topic.
 func (c *Coordinator) updateOffsetPartitionCount() {
 	c.mu.Lock()
-	groupCount := len(c.groups)
-	currentPartitionCount := c.offsetTopicPartitionCount
+	newCount := calculateOffsetPartitionCount(len(c.groups))
+	currentCount := c.offsetTopicPartitionCount
+
+	if newCount == currentCount {
+		c.mu.Unlock()
+		return
+	}
+
+	c.offsetTopicPartitionCount = newCount
 	c.mu.Unlock()
 
-	newCount := calculateOffsetPartitionCount(groupCount)
-
-	if newCount != currentPartitionCount {
-		c.mu.Lock()
-		c.offsetTopicPartitionCount = newCount
-		c.mu.Unlock()
-
-		c.offsetPublisher.CreateTopic(c.offsetTopic, newCount)
-		util.Info("Updated offset topic partitions to %d for %d groups", newCount, groupCount)
-	}
+	c.offsetPublisher.CreateTopic(c.offsetTopic, newCount)
+	util.Info("Updated offset topic partitions to %d", newCount)
 }
 
 func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, offset uint64, generation int, memberID string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	group := c.groups[groupName] // *GroupMetadata
+	group := c.getGroupLocked(groupName) // *GroupMetadata
 	if group == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("group not found")
 	}
 
 	member := group.Members[memberID]
 	if member == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("member not found")
 	}
 
 	if group.Generation != generation {
+		c.mu.Unlock()
 		return fmt.Errorf("generation mismatch")
 	}
 
 	if !contains(member.Assignments, partition) {
+		c.mu.Unlock()
 		return fmt.Errorf("not partition owner")
 	}
 
+	oldOffset, exists := c.offsets[groupName][topic][partition]
+
 	c.storeOffsetInMemory(groupName, topic, partition, offset)
+	c.mu.Unlock()
 
 	offsetMsg := OffsetCommitMessage{
-		Group:     groupName,
-		Topic:     topic,
-		Partition: partition,
-		Offset:    offset,
-		Timestamp: time.Now(),
+		Group: groupName, Topic: topic, Partition: partition,
+		Offset: offset, Timestamp: time.Now(),
 	}
 
 	payload, err := json.Marshal(offsetMsg)
@@ -190,22 +191,34 @@ func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, 
 		return fmt.Errorf("failed to marshal offset commit: %w", err)
 	}
 
-	if err := c.offsetPublisher.Publish(c.offsetTopic,
-		&types.Message{
-			Payload: string(payload),
-			Key:     fmt.Sprintf("%s-%s-%d", groupName, topic, partition),
-		}); err != nil {
+	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
+		Payload: string(payload),
+		Key:     fmt.Sprintf("%s-%s-%d", groupName, topic, partition),
+	}); err != nil {
+		c.mu.Lock()
+		if exists {
+			c.storeOffsetInMemory(groupName, topic, partition, oldOffset)
+		} else {
+			delete(c.offsets[groupName][topic], partition)
+		}
+		c.mu.Unlock()
+
+		util.Error("Offset publish failed, rolled back in-memory state: %v", err)
 		return err
 	}
 
 	return nil
 }
 
+func (c *Coordinator) getGroupLocked(name string) *GroupMetadata {
+	return c.groups[name]
+}
+
 func (c *Coordinator) ValidateOwnershipAtomic(groupName, memberID string, generation int, partition int) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	group := c.GetGroup(groupName)
+	group := c.getGroupLocked(groupName)
 	if group == nil {
 		util.Debug("failed to validate ownership for partition %d: Group '%s' not found.", partition, groupName)
 		return false

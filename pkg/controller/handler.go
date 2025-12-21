@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	clusterController "github.com/downfa11-org/go-broker/pkg/cluster/controller"
@@ -141,7 +142,11 @@ func (ch *CommandHandler) errorResponse(msg string) string {
 		Status:   "ERROR",
 		ErrorMsg: msg,
 	}
-	respBytes, _ := json.Marshal(errorResp)
+	respBytes, err := json.Marshal(errorResp)
+	if err != nil {
+		return fmt.Sprintf("failed to marshal error resp: %v", err)
+	}
+
 	return string(respBytes)
 }
 

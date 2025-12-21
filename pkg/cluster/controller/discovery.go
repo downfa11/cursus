@@ -18,8 +18,8 @@ type ServiceDiscovery struct {
 	addr     string
 }
 
-func NewServiceDiscovery(rm *replication.RaftReplicationManager, brokerID, addr string) ServiceDiscovery {
-	return ServiceDiscovery{
+func NewServiceDiscovery(rm *replication.RaftReplicationManager, brokerID, addr string) *ServiceDiscovery {
+	return &ServiceDiscovery{
 		rm:       rm,
 		fsm:      rm.GetFSM(),
 		brokerID: brokerID,
@@ -165,7 +165,11 @@ func (sd *ServiceDiscovery) reconcile() {
 				Status:   "active",
 				LastSeen: time.Now(),
 			}
-			data, _ := json.Marshal(broker)
+			data, err := json.Marshal(broker)
+			if err != nil {
+				util.Error("failed to marshal: %w", err)
+				return
+			}
 			_ = sd.rm.ApplyCommand("REGISTER", data)
 		}
 	}

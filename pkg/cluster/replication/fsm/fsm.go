@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -264,8 +265,14 @@ func (f *BrokerFSM) getCurrentRaftLeaderID() string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	for id := range f.brokers {
-		return id
+	if len(f.brokers) == 0 {
+		return ""
 	}
-	return "unknown-leader"
+
+	var ids []string
+	for id := range f.brokers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids[0]
 }

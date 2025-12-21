@@ -470,6 +470,7 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 // handleBatchCommit processes BATCH_COMMIT topic=T1 group=G1 generation=1 member=M1 P0:10,P1:20...
 func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 	args := parseKeyValueArgs(cmd[13:])
+
 	topicName := args["topic"]
 	groupID := args["group"]
 	memberID := args["member"]
@@ -480,6 +481,13 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 	if partsIdx == -1 {
 		return "invalid batch commit format"
 	}
+
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
+	}
+
 	partitionData := cmd[partsIdx+1:]
 	partitionPairs := strings.Split(partitionData, ",")
 
@@ -528,13 +536,9 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 			"topic":   topicName,
 			"offsets": offsetList,
 		}
-		data, err := json.Marshal(batchCommitData)
+		_, err := ch.applyAndWait("BATCH_OFFSET", batchCommitData)
 		if err != nil {
-			return fmt.Sprintf("ERROR: failed to marshal batch commit data: %v", err)
-		}
-		err = ch.Cluster.RaftManager.ApplyCommand("BATCH_OFFSET", data)
-		if err != nil {
-			return fmt.Sprintf("raft batch apply failed: %v", err)
+			return fmt.Sprintf("❌ Raft batch apply failed: %v", err)
 		}
 	} else if ch.Coordinator != nil {
 		err := ch.Coordinator.CommitOffsetsBulk(groupID, topicName, offsetList)
