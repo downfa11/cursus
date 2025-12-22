@@ -421,12 +421,6 @@ func (c *Consumer) startConsuming() {
 		c.bmStartTime = time.Now()
 	}
 
-	c.mu.Lock()
-	for pid := range c.partitionConsumers {
-		util.Info("Starting consumer for partition %d", pid)
-	}
-	c.mu.Unlock()
-
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
@@ -476,6 +470,7 @@ func (c *Consumer) TriggerBenchmarkStop() {
 		c.metrics.PrintSummary()
 	}
 
+	time.Sleep(time.Second)
 	os.Exit(0)
 }
 
@@ -717,7 +712,6 @@ func (c *Consumer) processBatchSync(msgs []types.Message, partition int) error {
 		c.metrics.RecordProcessed(1)
 
 		if c.metrics.IsDone() {
-			util.Info("🎯 Exact target reached: %d. Terminating...", c.metrics.TargetMessages)
 			c.TriggerBenchmarkStop()
 			return nil
 		}

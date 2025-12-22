@@ -94,30 +94,22 @@ func main() {
 	} else {
 		pub.FlushBenchmark(total)
 		duration := time.Since(start)
-
-		finalErrorCount := atomic.LoadUint64(&errorCount)
 		sentMessages := pub.GetSentMessageCount()
 
-		fmt.Println("\n--- Reliability Report ---")
-		fmt.Printf("Total Target:    %d\n", total)
-		fmt.Printf("Successfully Sent: %d\n", sentMessages)
-		fmt.Printf("Failed Requests:   %d (%.2f%%)\n", finalErrorCount, float64(finalErrorCount)/float64(total)*100)
-
+		errors := make(map[string]uint64)
 		errSummary.Range(func(key, value interface{}) bool {
-			fmt.Printf("  - [%d occurrences]: %s\n", atomic.LoadUint64(value.(*uint64)), key.(string))
+			errors[key.(string)] = atomic.LoadUint64(value.(*uint64))
 			return true
 		})
-		fmt.Println("--------------------------")
 
 		if err := pub.VerifySentSequences(total); err != nil {
 			util.Info("verify failed: %v", err)
 		}
 
-		partitionStats := make([]bench.PartitionStat, 0, pub.GetPartitionCount())
 		stats := pub.GetPartitionStats()
-		partitionStats = append(partitionStats, stats...)
+		bench.PrintBenchmarkSummaryFixed(stats, sentMessages, total, duration, errors)
 
-		bench.PrintBenchmarkSummaryFixed(partitionStats, sentMessages, duration)
+		time.Sleep(time.Second)
 		os.Exit(0)
 	}
 

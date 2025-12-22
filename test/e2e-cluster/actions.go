@@ -37,8 +37,9 @@ func (a *ClusterActions) StartCluster() *ClusterActions {
 func (a *ClusterActions) waitForNodeHealth(nodeIndex int, port int) error {
 	a.ctx.GetT().Logf("Waiting for node %d health check on port %d...", nodeIndex, port)
 
+	healthUrl := fmt.Sprintf("http://localhost:%d/health", port)
 	for retry := 0; retry < 30; retry++ {
-		resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", port))
+		resp, err := http.Get(healthUrl)
 		if err == nil && resp.StatusCode == 200 {
 			resp.Body.Close()
 			a.ctx.GetT().Logf("Node %d is healthy", nodeIndex)
@@ -180,7 +181,10 @@ func (a *ClusterActions) SimulateLeaderFailure() *ClusterActions {
 		port := 9080 + i
 		if err := a.waitForNodeHealth(i, port); err == nil {
 			a.ctx.GetT().Logf("Node %d appears to be the new leader", i)
-			a.ctx.TestContext.SetBrokerAddr(fmt.Sprintf("localhost:%d", port))
+			a.ctx.TestContext.SetBrokerAddrs(
+				[]string{
+					fmt.Sprintf("localhost:%d", port),
+				})
 			break
 		}
 	}

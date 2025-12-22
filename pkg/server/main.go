@@ -121,7 +121,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg, cd, sm, cc)
+				HandleConnection(ctx, conn, tm, dm, cfg, cd, sm, cc)
 			}
 		}()
 	}
@@ -137,18 +137,34 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) {
+func HandleConnection(ctx context.Context, conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) {
 	defer conn.Close()
 
-	cmdHandler, ctx := initializeConnection(cfg, tm, dm, cd, sm, cc)
+	clientCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cmdHandler, cmdCtx := initializeConnection(cfg, tm, dm, cd, sm, cc)
 
 	for {
-		data, err := readMessage(conn, cfg.CompressionType)
-		if err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			util.Error("⚠️ SetReadDeadline error: %v", err)
 			return
 		}
 
-		shouldExit, err := processMessage(data, cmdHandler, ctx, conn)
+		data, err := readMessage(conn, cfg.CompressionType)
+		if err != nil {
+			select {
+			case <-clientCtx.Done():
+				return
+			default:
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue
+				}
+				return
+			}
+		}
+
+		shouldExit, err := processMessage(data, cmdHandler, cmdCtx, conn)
 		if err != nil || shouldExit {
 			return
 		}

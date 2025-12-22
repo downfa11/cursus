@@ -2,19 +2,26 @@ package e2e
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-const defaultBrokerAddr = "localhost:9000"
+var (
+	envOnce                   sync.Once
+	defaultBrokerAddrs        = []string{"localhost:10000"}
+	StandAloneHealthCheckAddr = []string{"http://localhost:10080/health"}
+)
 
 // TestContext holds all test state and configuration
 type TestContext struct {
 	t              *testing.T
-	brokerAddr     string
+	brokerAddrs    []string
 	topic          string
 	partitions     int
 	numMessages    int
@@ -25,6 +32,7 @@ type TestContext struct {
 	publishedCount int
 	consumedCount  int
 	consumerGroup  string
+	lastError      error
 
 	// Producer state
 	producerID       string
@@ -43,33 +51,63 @@ type TestContext struct {
 
 // Given creates a new test context with default values
 func Given(t *testing.T) *TestContext {
+	initEnvironment(t)
+	uniqueID := uuid.New().String()[:8]
+
 	return &TestContext{
 		t:              t,
-		brokerAddr:     defaultBrokerAddr,
+		brokerAddrs:    defaultBrokerAddrs,
 		topic:          "test-topic",
 		partitions:     1,
 		numMessages:    10,
 		publishDelayMS: 100,
 		startTime:      time.Now(),
-		consumerGroup:  fmt.Sprintf("test-group-%d", time.Now().UnixNano()),
-
-		memberID:   fmt.Sprintf("e2e-consumer-%d", time.Now().UnixNano()),
-		generation: 0,
-
-		producerID: uuid.New().String(),
-		seqNum:     0,
-		acks:       "1",
-		client:     nil, // lazily initialized
+		consumerGroup:  fmt.Sprintf("test-group-%s", uniqueID),
+		memberID:       fmt.Sprintf("e2e-consumer-%s", uniqueID),
+		generation:     0,
+		producerID:     uuid.New().String(),
+		seqNum:         0,
+		acks:           "1",
+		client:         nil, // lazily initialized
 	}
+}
+
+// GivenRestart starts the broker environment and returns a new context
+func initEnvironment(t *testing.T) {
+	envOnce.Do(func() {
+		t.Log("Starting docker-compose environment...")
+
+		cmd := exec.Command("docker-compose", "-f", "docker-compose.yml", "up", "-d")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("Failed to start docker-compose: %v\nOutput: %s", err, string(output))
+		}
+		time.Sleep(10 * time.Second)
+	})
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+
+	fmt.Println("All tests finished. Cleaning up docker-compose environment...")
+	cmd := exec.Command("docker-compose", "-f", "docker-compose.yml", "down", "-v")
+	_ = cmd.Run()
+
+	os.Exit(code)
+}
+
+func (ctx *TestContext) GetT() *testing.T {
+	return ctx.t
 }
 
 func (ctx *TestContext) getClient() *BrokerClient {
 	if ctx.client == nil {
-		ctx.client = NewBrokerClient(ctx.brokerAddr)
+		ctx.client = NewBrokerClient(ctx.brokerAddrs)
 
 		ctx.client.mu.Lock()
 		ctx.client.memberID = ctx.memberID
 		ctx.client.mu.Unlock()
+
+		ctx.t.Logf("Initialized BrokerClient with nodes: %v", ctx.brokerAddrs)
 	}
 
 	return ctx.client
@@ -86,8 +124,8 @@ func (ctx *TestContext) SetNumMessages(num int) *TestContext {
 	return ctx
 }
 
-func (ctx *TestContext) SetBrokerAddr(addr string) {
-	ctx.brokerAddr = addr
+func (ctx *TestContext) SetBrokerAddrs(addrs []string) {
+	ctx.brokerAddrs = addrs
 	if ctx.client != nil {
 		ctx.client.Close()
 		ctx.client = nil
@@ -95,8 +133,8 @@ func (ctx *TestContext) SetBrokerAddr(addr string) {
 }
 
 // GetBrokerAddr returns the broker address
-func (ctx *TestContext) GetBrokerAddr() string {
-	return ctx.brokerAddr
+func (ctx *TestContext) GetBrokerAddrs() []string {
+	return ctx.brokerAddrs
 }
 
 // GetTopic returns the topic name

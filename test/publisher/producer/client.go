@@ -2,10 +2,8 @@ package producer
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +36,22 @@ type ProducerClient struct {
 	leader atomic.Pointer[leaderInfo]
 }
 
+func NewProducerClient(partitions int, config *config.PublisherConfig) *ProducerClient {
+	pc := &ProducerClient{
+		ID:      uuid.New().String(),
+		Epoch:   time.Now().UnixNano(),
+		seqNums: make([]atomic.Uint64, partitions),
+		config:  config,
+	}
+
+	pc.leader.Store(&leaderInfo{
+		addr:    "",
+		updated: time.Time{},
+	})
+
+	return pc
+}
+
 func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
 	if partition < 0 || partition >= len(pc.seqNums) {
 		panic(fmt.Sprintf("invalid partition index in CommitSeqRange: %d", partition))
@@ -52,50 +66,6 @@ func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
 			return
 		}
 	}
-}
-
-func NewProducerClient(partitions int, config *config.PublisherConfig) *ProducerClient {
-	pc := &ProducerClient{
-		ID:      uuid.New().String(),
-		Epoch:   time.Now().UnixNano(),
-		seqNums: make([]atomic.Uint64, partitions),
-		config:  config,
-	}
-
-	pc.leader.Store(&leaderInfo{
-		addr:    "",
-		updated: time.Time{},
-	})
-
-	if err := pc.loadState(); err != nil {
-		fmt.Printf("Warning: failed to load producer state: %v\n", err)
-	}
-	return pc
-}
-
-func (pc *ProducerClient) loadState() error {
-	data, err := os.ReadFile("producer_state.json")
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-
-	var state ProducerState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return err
-	}
-
-	pc.ID = state.ProducerID
-	pc.Epoch = state.Epoch
-
-	for partition, seq := range state.LastSeqNums {
-		if partition < len(pc.seqNums) {
-			pc.seqNums[partition].Store(seq)
-		}
-	}
-	return nil
 }
 
 func (pc *ProducerClient) NextSeqNum(partition int) uint64 {

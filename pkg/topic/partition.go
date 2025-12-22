@@ -40,7 +40,7 @@ func (p *Partition) Enqueue(msg types.Message) {
 		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
 	}
 
-	p.broadcastToStreams(msg)
+	go p.broadcastToStreams(msg)
 }
 
 func (p *Partition) EnqueueSync(msg types.Message) error {
@@ -66,7 +66,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 		return fmt.Errorf("disk handler does not support sync write")
 	}
 
-	p.broadcastToStreams(msg)
+	go p.broadcastToStreams(msg)
 	return nil
 }
 
@@ -104,7 +104,7 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 	p.NotifyNewMessage()
 
 	for _, msg := range msgs {
-		p.broadcastToStreams(msg)
+		go p.broadcastToStreams(msg)
 	}
 	return nil
 }
@@ -136,7 +136,7 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 	}
 
 	for _, msg := range msgs {
-		p.broadcastToStreams(msg)
+		go p.broadcastToStreams(msg)
 	}
 	return nil
 }

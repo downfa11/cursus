@@ -148,6 +148,7 @@ func (p *Publisher) CreateTopic(topic string, partitions int) error {
 		return fmt.Errorf("broker error: %s", string(resp))
 	}
 
+	util.Info("create topic %s partition %d", topic, partitions)
 	return nil
 }
 
@@ -514,8 +515,6 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 		util.Error("invalid ack format: %v, %w", string(resp), err)
 		return nil, fmt.Errorf("invalid ack format: %v, %w", string(resp), err)
 	}
-
-	util.Debug("parse: %v", ackResp)
 
 	if ackResp.Leader != "" {
 		if ackResp.Leader != p.producer.GetLeaderAddr() {

@@ -8,21 +8,27 @@ import (
 	"github.com/downfa11-org/go-broker/test/e2e"
 )
 
+var (
+	ClusterBrokerAddrs     = []string{"localhost:9000", "localhost:9001", "localhost:9002"}
+	ClusterHealthCheckAddr = []string{"http://localhost:9080/health", "http://localhost:9081/health", "http://localhost:9082/health"}
+)
+
 // ClusterTestContext extends e2e.TestContext for cluster testing
 type ClusterTestContext struct {
 	*e2e.TestContext
 	clusterSize       int
 	minInSyncReplicas int
-	nodeAddresses     []string
 }
 
 // GivenCluster creates a new cluster test context
 func GivenCluster(t *testing.T) *ClusterTestContext {
+	ctx := e2e.Given(t)
+	ctx.SetBrokerAddrs(ClusterBrokerAddrs)
+
 	return &ClusterTestContext{
-		TestContext:       e2e.Given(t),
+		TestContext:       ctx,
 		clusterSize:       3,
 		minInSyncReplicas: 2,
-		nodeAddresses:     []string{"localhost:9080", "localhost:9081", "localhost:9082"},
 	}
 }
 
@@ -79,6 +85,6 @@ func (c *ClusterTestContext) WithMinInSyncReplicas(min int) *ClusterTestContext 
 }
 
 func (c *ClusterTestContext) WithNodeAddresses(addrs []string) *ClusterTestContext {
-	c.nodeAddresses = addrs
+	c.TestContext.SetBrokerAddrs(addrs)
 	return c
 }

@@ -86,7 +86,6 @@ func TestDefaultGroupOffsetSharing(t *testing.T) {
 		Then().
 		Expect(MessagesConsumed(10))
 
-	// Second consumer in same group should see no new messages
 	ctx2 := Given(t)
 	defer ctx2.Cleanup()
 
@@ -174,7 +173,7 @@ func TestConsumerOptionsComprehensive(t *testing.T) {
 				JoinGroup().
 				SyncGroup().
 				ConsumeMessages().
-				CommitOffset(0, 30).
+				CommitAllOffsets(30).
 				Then().
 				Expect(MessagesConsumed(30)).
 				And(OffsetsCommitted())

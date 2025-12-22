@@ -17,7 +17,7 @@ func TestPublisherConfigOptions(t *testing.T) {
 		CreateTopic().
 		PublishMessages().
 		Then().
-		Expect(BrokerIsHealthy()).
+		Expect(BrokerIsHealthy(StandAloneHealthCheckAddr)).
 		And(MessagesPublished(5))
 }
 
@@ -193,7 +193,7 @@ func TestProducerOptionsComprehensive(t *testing.T) {
 				result.Expect(PublishFailed())
 			} else {
 				result.Expect(MessagesPublished(20)).
-					And(BrokerIsHealthy())
+					And(BrokerIsHealthy(StandAloneHealthCheckAddr))
 			}
 		})
 	}

@@ -135,20 +135,20 @@ func (c *Coordinator) GetOffset(group, topic string, partition int) (uint64, boo
 
 // updateOffsetPartitionCount updates the number of partitions for the internal offset topic.
 func (c *Coordinator) updateOffsetPartitionCount() {
-	c.mu.Lock()
 	newCount := calculateOffsetPartitionCount(len(c.groups))
 	currentCount := c.offsetTopicPartitionCount
 
 	if newCount == currentCount {
-		c.mu.Unlock()
 		return
 	}
 
 	c.offsetTopicPartitionCount = newCount
-	c.mu.Unlock()
+	topicName := c.offsetTopic
 
-	c.offsetPublisher.CreateTopic(c.offsetTopic, newCount)
-	util.Info("Updated offset topic partitions to %d", newCount)
+	go func() {
+		c.offsetPublisher.CreateTopic(topicName, newCount)
+		util.Info("✅ Offset topic '%s' partitions scaled to %d", topicName, newCount)
+	}()
 }
 
 func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, offset uint64, generation int, memberID string) error {

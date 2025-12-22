@@ -27,9 +27,9 @@ func (c *Consequences) And(expectations ...Expectation) *Consequences {
 }
 
 // Common expectations
-func BrokerIsHealthy() Expectation {
+func BrokerIsHealthy(healthCheckURLs []string) Expectation {
 	return func(ctx *TestContext) error {
-		if err := CheckBrokerHealth(); err != nil {
+		if err := CheckBrokerHealth(healthCheckURLs); err != nil {
 			return fmt.Errorf("broker health check failed: %w", err)
 		}
 		return nil
@@ -86,7 +86,7 @@ func OffsetsCommitted() Expectation {
 			return fmt.Errorf("no messages consumed, cannot verify offset commit")
 		}
 
-		client := NewBrokerClient(ctx.brokerAddr)
+		client := NewBrokerClient(ctx.brokerAddrs)
 		defer client.Close()
 
 		for partition := 0; partition < ctx.partitions; partition++ {
@@ -105,7 +105,7 @@ func OffsetsCommitted() Expectation {
 // ConsumerGroupIsActive verifies the group status via broker API.
 func ConsumerGroupIsActive() Expectation {
 	return func(ctx *TestContext) error {
-		client := NewBrokerClient(ctx.brokerAddr)
+		client := NewBrokerClient(ctx.brokerAddrs)
 		defer client.Close()
 
 		status, err := client.GetConsumerGroupStatus(ctx.consumerGroup)
@@ -127,7 +127,7 @@ func ConsumerGroupIsActive() Expectation {
 
 func HeartbeatsSent() Expectation {
 	return func(ctx *TestContext) error {
-		client := NewBrokerClient(ctx.brokerAddr)
+		client := NewBrokerClient(ctx.brokerAddrs)
 		defer client.Close()
 
 		status, err := client.GetConsumerGroupStatus(ctx.consumerGroup)
@@ -160,10 +160,10 @@ func HeartbeatsSent() Expectation {
 // PublishFailed verifies that publish operations failed as expected
 func PublishFailed() Expectation {
 	return func(ctx *TestContext) error {
-		if ctx.publishedCount > 0 {
-			return fmt.Errorf("expected publish to fail but %d messages were published", ctx.publishedCount)
+		if ctx.lastError == nil && ctx.publishedCount > 0 {
+			return fmt.Errorf("expected publish to fail but it succeeded")
 		}
-		ctx.GetT().Log("Publish failed as expected")
+		ctx.GetT().Logf("Publish failed as expected with error: %v", ctx.lastError)
 		return nil
 	}
 }

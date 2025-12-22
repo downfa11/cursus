@@ -51,7 +51,6 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 	}
 
 	tm := ch.TopicManager
-
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
 		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
 			return resp
@@ -72,6 +71,7 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 	}
 
 	t := tm.GetTopic(topicName)
+
 	if ch.Coordinator != nil {
 		err := ch.Coordinator.RegisterGroup(topicName, "default-group", partitions)
 		if err != nil {

@@ -9,7 +9,7 @@ import (
 // MessagesReplicatedToAllNodes checks that all nodes have the same data
 func MessagesReplicatedToAllNodes() e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		client := e2e.NewBrokerClient(ctx.GetBrokerAddr())
+		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 		defer client.Close()
 
 		leaderOffsets := make(map[int]uint64)
@@ -29,7 +29,7 @@ func MessagesReplicatedToAllNodes() e2e.Expectation {
 // ISRMaintained verifies ISR is maintained during operations
 func ISRMaintained() e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		client := e2e.NewBrokerClient(ctx.GetBrokerAddr())
+		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 		defer client.Close()
 
 		ctx.GetT().Log("Checking ISR status...")
@@ -51,12 +51,10 @@ func NoDuplicateMessages() e2e.Expectation {
 		}
 
 		if ctx.GetConsumedCount() > ctx.GetPublishedCount() {
-			return fmt.Errorf("consumed %d messages but only %d published (duplicates detected)",
-				ctx.GetConsumedCount(), ctx.GetPublishedCount())
+			return fmt.Errorf("consumed %d messages but only %d published (duplicates detected)", ctx.GetConsumedCount(), ctx.GetPublishedCount())
 		}
 
-		ctx.GetT().Logf("Verified no duplicates: %d published, %d consumed",
-			ctx.GetPublishedCount(), ctx.GetConsumedCount())
+		ctx.GetT().Logf("Verified no duplicates: %d published, %d consumed", ctx.GetPublishedCount(), ctx.GetConsumedCount())
 		return nil
 	}
 }
@@ -64,10 +62,10 @@ func NoDuplicateMessages() e2e.Expectation {
 // ClusterStable verifies cluster is stable after operations
 func ClusterStable() e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		client := e2e.NewBrokerClient(ctx.GetBrokerAddr())
+		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 		defer client.Close()
 
-		if err := e2e.CheckBrokerHealth(); err != nil {
+		if err := e2e.CheckBrokerHealth(ClusterHealthCheckAddr); err != nil {
 			return fmt.Errorf("broker health check failed: %w", err)
 		}
 
@@ -79,7 +77,7 @@ func ClusterStable() e2e.Expectation {
 // ConsumptionContinuityFromOffset verifies consumption continues from specified offset
 func ConsumptionContinuityFromOffset(offset uint64) e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		client := e2e.NewBrokerClient(ctx.GetBrokerAddr())
+		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 		defer client.Close()
 
 		currentOffset, err := client.FetchCommittedOffset(ctx.GetTopic(), 0, ctx.GetConsumerGroup())
@@ -118,7 +116,7 @@ func NoDataLoss() e2e.Expectation {
 // OffsetsInSync verifies offsets are in sync across replicas
 func OffsetsInSync() e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		client := e2e.NewBrokerClient(ctx.GetBrokerAddr())
+		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 		defer client.Close()
 
 		for partition := 0; partition < ctx.GetPartitions(); partition++ {
@@ -162,7 +160,7 @@ func MessagesPublishedWithQuorum() e2e.Expectation {
 
 func MessagesReplicatedAfterPartitionHeal() e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		client := e2e.NewBrokerClient(ctx.GetBrokerAddr())
+		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 		defer client.Close()
 
 		for partition := 0; partition < ctx.GetPartitions(); partition++ {
@@ -199,7 +197,7 @@ func NoDataLossDuringPartition() e2e.Expectation {
 
 func ClusterMaintainsQuorum() e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		client := e2e.NewBrokerClient(ctx.GetBrokerAddr())
+		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 		defer client.Close()
 
 		if ctx.GetAcks() != "all" {
