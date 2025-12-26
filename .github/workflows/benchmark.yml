@@ -1,0 +1,56 @@
+name: Benchmark Tests  
+  
+on:  
+  push:  
+    branches: [ main ]  
+  pull_request:  
+    branches: [ main ]  
+  
+jobs:  
+  benchmark:  
+    runs-on: ubuntu-latest  
+    steps:  
+    - uses: actions/checkout@v4  
+      
+    - name: Set up Go  
+      uses: actions/setup-go@v5  
+      with:  
+        go-version: '1.25.0'  
+      
+    - name: Set up Python  
+      uses: actions/setup-python@v4  
+      with:  
+        python-version: '3.9'  
+      
+    - name: Install dependencies  
+      run: |  
+        pip install pandas matplotlib seaborn  
+      
+    - name: Build broker  
+      run: make build  
+      
+    - name: Run benchmarks  
+      run: |  
+        export GOBROKER_DURATION="2m"  
+        export GOBROKER_THREADS="10"  
+        export GOBROKER_MESSAGE_SIZE="1024"  
+        make bench-all  
+      env:  
+        GOBROKER_QUIET: "1"  
+        GOBROKER_FSYNC: "100ms"  
+      
+    - name: Generate comparison  
+      run: |  
+        python test/scripts/compare_brokers.py \  
+          --walrus test/data/walrus_baseline.csv \  
+          --kafka test/data/kafka_baseline.csv \  
+          --gobroker test/data/benchmark_throughput.csv \  
+          --output benchmark_comparison.png  
+      
+    - name: Upload results  
+      uses: actions/upload-artifact@v3  
+      with:  
+        name: benchmark-results  
+        path: |  
+          test/data/*.csv  
+          benchmark_comparison.png
