@@ -331,7 +331,7 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 	if ch.Coordinator != nil {
 		offset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
 		if !isFind {
-			return "ERROR: no offset found"
+			return "no offset found"
 		}
 		return fmt.Sprintf("%d", offset)
 	} else {

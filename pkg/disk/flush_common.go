@@ -33,7 +33,7 @@ func (d *DiskHandler) flushLoop() {
 			util.Debug("Received message, batch size now: %d/%d", len(batch), d.batchSize)
 
 			if len(batch) >= d.batchSize {
-				util.Debug("🔥 Batch size threshold reached, flushing %d messages", len(batch))
+				util.Debug("Batch size threshold reached, flushing %d messages", len(batch))
 				if err := d.writeBatch(batch); err != nil {
 					util.Error("writeBatch failed: %v", err)
 				}
@@ -41,7 +41,7 @@ func (d *DiskHandler) flushLoop() {
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
-				util.Debug("🔥 Flushing %d messages on timer", len(batch))
+				util.Debug("Flushing %d messages on timer", len(batch))
 				if err := d.writeBatch(batch); err != nil {
 					util.Error("writeBatch failed: %v", err)
 				}

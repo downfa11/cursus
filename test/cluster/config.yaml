@@ -3,9 +3,9 @@ enabled_distribution: true
 min_insync_replicas: 2
 raft_port: 7000
 static_cluster_members: 
-  - "broker1@broker1:7000"
-  - "broker2@broker2:7000"
-  - "broker3@broker3:7000"
+  - "broker-1@broker-1:7000"
+  - "broker-2@broker-2:7000"
+  - "broker-3@broker-3:7000"
 
 # Broker settings
 broker_port: 9000

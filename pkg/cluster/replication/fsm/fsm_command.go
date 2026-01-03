@@ -94,8 +94,6 @@ func (f *BrokerFSM) handleUnknownCommand(data string) interface{} {
 }
 
 func (f *BrokerFSM) applyMessageCommand(jsonData string) interface{} {
-	util.Debug("FSM received Raft command JSON: %s", jsonData)
-
 	cmd, err := parseMessageCommand(jsonData)
 	if err != nil {
 		return errorAckResponse(err.Error(), "", 0)

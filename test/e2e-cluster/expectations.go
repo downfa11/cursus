@@ -31,14 +31,10 @@ func ISRMaintained() e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
 		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
 		defer client.Close()
-
-		ctx.GetT().Log("Checking ISR status...")
-
 		if ctx.GetPublishedCount() == 0 {
 			return fmt.Errorf("no messages published to verify ISR")
 		}
 
-		ctx.GetT().Logf("ISR maintained with %d messages published", ctx.GetPublishedCount())
 		return nil
 	}
 }
@@ -46,30 +42,29 @@ func ISRMaintained() e2e.Expectation {
 // NoDuplicateMessages verifies no duplicates in consumed messages
 func NoDuplicateMessages() e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		if ctx.GetConsumedCount() == 0 {
-			return fmt.Errorf("no messages consumed to check for duplicates")
-		}
+		pub := ctx.GetPublishedCount()
+		con := ctx.GetConsumedCount()
 
-		if ctx.GetConsumedCount() > ctx.GetPublishedCount() {
-			return fmt.Errorf("consumed %d messages but only %d published (duplicates detected)", ctx.GetConsumedCount(), ctx.GetPublishedCount())
+		if con > pub {
+			return fmt.Errorf("Failed: Duplicates detected (Publish: %d, Consume: %d)", pub, con)
 		}
-
-		ctx.GetT().Logf("Verified no duplicates: %d published, %d consumed", ctx.GetPublishedCount(), ctx.GetConsumedCount())
+		if con < pub {
+			return fmt.Errorf("Data Loss: (Pub: %d, Con: %d)", pub, con)
+		}
 		return nil
 	}
 }
 
 // ClusterStable verifies cluster is stable after operations
-func ClusterStable() e2e.Expectation {
+func ClusterStable(clusterSize int) e2e.Expectation {
 	return func(ctx *e2e.TestContext) error {
-		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
-		defer client.Close()
+		healthAddrs := clusterHealthCheckAddrs(clusterSize)
 
-		if err := e2e.CheckBrokerHealth(ClusterHealthCheckAddr); err != nil {
-			return fmt.Errorf("broker health check failed: %w", err)
+		if err := e2e.CheckBrokerHealth(healthAddrs); err != nil {
+			return fmt.Errorf("cluster health check failed: %w", err)
 		}
 
-		ctx.GetT().Logf("Cluster stable - topic %s accessible", ctx.GetTopic())
+		ctx.GetT().Logf("Cluster stable - %d nodes healthy", clusterSize)
 		return nil
 	}
 }
@@ -225,6 +220,51 @@ func NoMessagesLostDuringRebalance() e2e.Expectation {
 		}
 
 		ctx.GetT().Log("No messages lost during rebalance")
+		return nil
+	}
+}
+
+func ExactlyOnceDelivered() e2e.Expectation {
+	return func(ctx *e2e.TestContext) error {
+		published := ctx.GetPublishedCount()
+		consumed := ctx.GetConsumedCount()
+
+		if consumed != published {
+			return fmt.Errorf("published %d, consumed %d (Mismatch)", published, consumed)
+		}
+
+		ctx.GetT().Logf("Exactly %d messages delivered without duplicates", consumed)
+		return nil
+	}
+}
+
+func AllPartitionsInSync() e2e.Expectation {
+	return func(ctx *e2e.TestContext) error {
+		client := e2e.NewBrokerClient(ctx.GetBrokerAddrs())
+		defer client.Close()
+
+		for p := 0; p < ctx.GetPartitions(); p++ {
+			committed, err := client.FetchCommittedOffset(ctx.GetTopic(), p, ctx.GetConsumerGroup())
+			if err != nil {
+				return err
+			}
+
+			ctx.GetT().Logf("Partition %d: Stable Offset %d", p, committed)
+		}
+		return nil
+	}
+}
+
+func ConsistentAfterFailure(clusterSize int) e2e.Expectation {
+	return func(ctx *e2e.TestContext) error {
+		if err := NoDataLoss()(ctx); err != nil {
+			return fmt.Errorf("consistency broken after failure: %w", err)
+		}
+
+		if err := e2e.CheckBrokerHealth(clusterHealthCheckAddrs(clusterSize)); err != nil {
+			return fmt.Errorf("cluster unstable after recovery: %w", err)
+		}
+
 		return nil
 	}
 }
