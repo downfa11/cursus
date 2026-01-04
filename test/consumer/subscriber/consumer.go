@@ -14,7 +14,6 @@ import (
 	"github.com/downfa11-org/go-broker/consumer/bench"
 	"github.com/downfa11-org/go-broker/consumer/client"
 	"github.com/downfa11-org/go-broker/consumer/config"
-	"github.com/downfa11-org/go-broker/consumer/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
@@ -835,14 +834,6 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 		return false
 	}
 	return false
-}
-
-func (c *Consumer) processBatchSync(msgs []types.Message, partition int) error {
-	if c.metrics != nil {
-		c.metrics.OnFirstConsumeAfterRebalance()
-		c.metrics.RecordBatch(partition, len(msgs))
-	}
-	return nil
 }
 
 func (c *Consumer) directCommit(partition int, offset uint64) error {

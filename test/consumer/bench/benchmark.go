@@ -22,36 +22,20 @@ const (
 )
 
 type PartitionMetrics struct {
-	ID int
-
+	ID        int
 	firstSeen time.Time
 	lastSeen  time.Time
-
 	totalMsgs int64
-
-	lastSampleTime time.Time
-	lastSampleMsgs int64
-	tpsSamples     []float64
 }
 
 func (pm *PartitionMetrics) record(count int) {
 	now := time.Now()
-
 	if pm.firstSeen.IsZero() {
 		pm.firstSeen = now
-		pm.lastSampleTime = now
 	}
 
-	pm.totalMsgs += int64(count)
+	atomic.AddInt64(&pm.totalMsgs, int64(count))
 	pm.lastSeen = now
-
-	elapsed := now.Sub(pm.lastSampleTime).Seconds()
-	if elapsed >= 0.01 {
-		delta := pm.totalMsgs - pm.lastSampleMsgs
-		pm.tpsSamples = append(pm.tpsSamples, float64(delta)/elapsed)
-		pm.lastSampleMsgs = pm.totalMsgs
-		pm.lastSampleTime = now
-	}
 }
 
 func (pm *PartitionMetrics) TPS() float64 {
@@ -138,8 +122,7 @@ func (m *ConsumerMetrics) RecordBatch(partition int, count int) {
 			now := time.Now()
 			m.startTime = now
 			m.started = true
-
-			if ph := m.phases[m.currentPhase]; ph.startTime.IsZero() {
+			if ph, ok := m.phases[m.currentPhase]; ok && ph.startTime.IsZero() {
 				ph.startTime = now
 			}
 		}
@@ -148,48 +131,37 @@ func (m *ConsumerMetrics) RecordBatch(partition int, count int) {
 
 	atomic.AddInt64(&m.totalMsgs, int64(count))
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	m.mu.RLock()
 	ph := m.phases[m.currentPhase]
-	if ph.startTime.IsZero() {
-		ph.startTime = time.Now()
-	}
-	ph.totalMsgs += int64(count)
+	pm, ok := ph.partitions[partition]
+	m.mu.RUnlock()
 
-	pm := ph.partitions[partition]
-	if pm == nil {
-		pm = &PartitionMetrics{ID: partition}
-		ph.partitions[partition] = pm
+	if !ok {
+		m.mu.Lock()
+		ph = m.phases[m.currentPhase]
+		if pm, ok = ph.partitions[partition]; !ok {
+			pm = &PartitionMetrics{ID: partition}
+			ph.partitions[partition] = pm
+		}
+		m.mu.Unlock()
 	}
+
 	pm.record(count)
 }
 
 func (m *ConsumerMetrics) RecordMessage(partition int, offset int64, producerID string, seqNum uint64) {
-	if m.enableCorrectness {
-		offsetKey := encodeOffset(partition, offset)
-		if m.seenOffsetFilter.Add(offsetKey) {
-			atomic.AddInt64(&m.dupOffsetCount, 1)
-		}
-
-		messageKey := encodeMessageID(producerID, seqNum)
-		if m.seenIDFilter.Add(messageKey) {
-			atomic.AddInt64(&m.dupCount, 1)
-		}
+	if !m.enableCorrectness {
+		return
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	ph := m.phases[m.currentPhase]
-	if ph.startTime.IsZero() {
-		ph.startTime = time.Now()
+	offsetKey := encodeOffset(partition, offset)
+	if m.seenOffsetFilter.Add(offsetKey) {
+		atomic.AddInt64(&m.dupOffsetCount, 1)
 	}
 
-	pm := ph.partitions[partition]
-	if pm == nil {
-		pm = &PartitionMetrics{ID: partition}
-		ph.partitions[partition] = pm
+	messageKey := encodeMessageID(producerID, seqNum)
+	if m.seenIDFilter.Add(messageKey) {
+		atomic.AddInt64(&m.dupCount, 1)
 	}
 }
 

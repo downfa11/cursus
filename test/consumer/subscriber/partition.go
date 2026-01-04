@@ -54,17 +54,16 @@ func (pc *PartitionConsumer) runWorker() {
 		}
 
 		if pc.consumer.metrics != nil {
+			pc.consumer.metrics.OnFirstConsumeAfterRebalance()
 			for _, msg := range batch.Messages {
 				pc.consumer.metrics.RecordMessage(pc.partitionID, int64(msg.Offset), msg.ProducerID, msg.SeqNum)
 			}
+			pc.consumer.metrics.RecordBatch(pc.partitionID, len(batch.Messages))
+
 		}
 
 		if !pc.consumer.config.EnableBenchmark {
 			pc.printConsumedMessage(batch)
-		}
-
-		if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
-			util.Error("Partition [%d] process error: %v", pc.partitionID, err)
 		}
 
 		if pc.consumer.mainCtx.Err() != nil {
