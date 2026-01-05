@@ -90,7 +90,10 @@ func TestMain(m *testing.M) {
 
 	fmt.Println("All tests finished. Cleaning up docker-compose environment...")
 	cmd := exec.Command("docker-compose", "-f", "docker-compose.yml", "down", "-v")
-	_ = cmd.Run()
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: docker-compose down failed: %v\n", err)
+	}
 
 	os.Exit(code)
 }
@@ -102,15 +105,24 @@ func (ctx *TestContext) GetT() *testing.T {
 func (ctx *TestContext) getClient() *BrokerClient {
 	if ctx.client == nil {
 		ctx.client = NewBrokerClient(ctx.brokerAddrs)
-
-		ctx.client.mu.Lock()
-		ctx.client.memberID = ctx.memberID
-		ctx.client.mu.Unlock()
-
+		ctx.client.SetMemberID(ctx.memberID)
 		ctx.t.Logf("Initialized BrokerClient with nodes: %v", ctx.brokerAddrs)
 	}
 
 	return ctx.client
+}
+
+// GetMemberID returns the consumer member ID
+func (bc *BrokerClient) GetMemberID() string {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.memberID
+}
+
+func (bc *BrokerClient) SetMemberID(id string) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	bc.memberID = id
 }
 
 // GetNumMessages returns the current number of messages setting
@@ -182,13 +194,6 @@ func (ctx *TestContext) SetConsumedCount(count int) {
 	ctx.consumedCount = count
 }
 
-// GetMemberID returns the consumer member ID
-func (bc *BrokerClient) GetMemberID() string {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	return bc.memberID
-}
-
 // GetGeneration returns the consumer generation
 func (bc *BrokerClient) GetGeneration() int {
 	bc.mu.Lock()
@@ -204,6 +209,12 @@ func (c *TestContext) GetProducerID() string {
 // GetPublishedSeqNums returns the sequence numbers of published messages
 func (c *TestContext) GetPublishedSeqNums() []uint64 {
 	return c.publishedSeqNums
+}
+
+func (bc *BrokerClient) GetSyncInfo() (string, int) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.memberID, bc.generation
 }
 
 // Configuration methods (fluent interface)

@@ -178,7 +178,7 @@ func (bc *BrokerClient) JoinGroup(topic, group string) (int, string, error) {
 }
 
 // syncGroup executes the SYNC_GROUP command to finalize partition assignment.
-func (bc *BrokerClient) syncGroup(topic, group string, generation int, memberID string) ([]int, error) {
+func (bc *BrokerClient) SyncGroup(topic, group string, generation int, memberID string) ([]int, error) {
 	syncCmd := fmt.Sprintf("SYNC_GROUP topic=%s group=%s member=%s generation=%d", topic, group, memberID, generation)
 
 	resp, err := bc.sendCommandAndGetResponse("", syncCmd, 2*time.Second)
@@ -229,10 +229,9 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 	}
 
 	bc.mu.Lock()
-	conn := bc.conn
-	bc.mu.Unlock()
+	defer bc.mu.Unlock()
 
-	if conn == nil {
+	if bc.conn == nil {
 		return nil, fmt.Errorf("connection not available after connect")
 	}
 
@@ -241,20 +240,20 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 		topic, partition, startOffset, consumerGroup, memberID, generation)
 	cmdBytes := util.EncodeMessage(topic, consumeCmd)
 
-	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
-		if resetErr := conn.SetReadDeadline(time.Time{}); resetErr != nil {
+	if err := util.WriteWithLength(bc.conn, cmdBytes); err != nil {
+		if resetErr := bc.conn.SetReadDeadline(time.Time{}); resetErr != nil {
 			util.Warn("failed to reset read deadline after send failure: %v", resetErr)
 		}
 		return nil, fmt.Errorf("send consume command: %w", err)
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+	if err := bc.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 
-	rawData, err := util.ReadWithLength(conn)
+	rawData, err := util.ReadWithLength(bc.conn)
 
-	if resetErr := conn.SetReadDeadline(time.Time{}); resetErr != nil {
+	if resetErr := bc.conn.SetReadDeadline(time.Time{}); resetErr != nil {
 		util.Warn("failed to reset read deadline: %v", resetErr)
 	}
 
@@ -292,4 +291,51 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 	}
 
 	return nil, fmt.Errorf("unexpected response format: %s", respStr)
+}
+
+// ConsumeMessagesWithOffsets reads messages and their actual offsets from a partition
+func (bc *BrokerClient) ConsumeMessagesWithOffsets(topic string, partition int, consumerGroup string, memberID string, generation int, timeout time.Duration) ([]string, []uint64, error) {
+	if err := bc.connect(); err != nil {
+		return nil, nil, fmt.Errorf("connect: %w", err)
+	}
+
+	startOffset, _ := bc.FetchCommittedOffset(topic, partition, consumerGroup)
+
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s autoOffsetReset=earliest member=%s generation=%d", topic, partition, startOffset, consumerGroup, memberID, generation)
+	cmdBytes := util.EncodeMessage(topic, consumeCmd)
+
+	if err := util.WriteWithLength(bc.conn, cmdBytes); err != nil {
+		return nil, nil, fmt.Errorf("send consume command: %w", err)
+	}
+
+	if err := bc.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, nil, fmt.Errorf("set read deadline: %w", err)
+	}
+
+	rawData, err := util.ReadWithLength(bc.conn)
+	_ = bc.conn.SetReadDeadline(time.Time{})
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(rawData) >= 2 && rawData[0] == 0xBA && rawData[1] == 0x7C {
+		batch, err := util.DecodeBatchMessages(rawData)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decode batch: %w", err)
+		}
+
+		var messages []string
+		var offsets []uint64
+		for _, msg := range batch.Messages {
+			messages = append(messages, msg.Payload)
+			offsets = append(offsets, msg.Offset)
+		}
+		return messages, offsets, nil
+	}
+
+	return []string{}, []uint64{}, nil
 }

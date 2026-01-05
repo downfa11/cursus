@@ -36,10 +36,14 @@ func main() {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+
+	util.Info("Received signal: %v, shutting down...", <-sigCh)
 
 	if err := c.Close(); err != nil {
-		util.Error("Error closing consumer: %v", err)
+		util.Error("❌ Error closing consumer: %v", err)
+		os.Exit(1)
 	}
+
+	util.Info("✅ Consumer closed gracefully")
 	os.Exit(0)
 }

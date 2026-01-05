@@ -53,7 +53,7 @@ func (a *ClusterActions) checkAllNodesHealth() error {
 	healthAddrs := clusterHealthCheckAddrs(a.ctx.clusterSize)
 
 	for i, addr := range healthAddrs {
-		if err := a.waitForNodeHealth(i, addr); err != nil {
+		if err := a.waitForNodeHealth(i+1, addr); err != nil {
 			return err
 		}
 	}
@@ -94,10 +94,27 @@ func (a *ClusterActions) SimulateFollowerFailure() *ClusterActions {
 
 	cmd := exec.Command("docker", "stop", "broker-2")
 	if err := cmd.Run(); err != nil {
-		a.ctx.GetT().Logf("Failed to stop follower: %v", err)
+		a.ctx.GetT().Fatalf("Failed to stop follower: %v", err)
 		return a
 	}
 
+	a.ctx.GetT().Log("Successfully stopped broker-2")
 	time.Sleep(2 * time.Second)
+	return a
+}
+
+func (a *ClusterActions) RecoverFollower() *ClusterActions {
+	a.ctx.GetT().Log("Recovering follower")
+
+	cmd := exec.Command("docker", "start", "broker-2")
+	if err := cmd.Run(); err != nil {
+		a.ctx.GetT().Fatalf("Failed to recover follower): %v", err)
+	}
+
+	healthAddrs := clusterHealthCheckAddrs(a.ctx.clusterSize)
+	if err := a.waitForNodeHealth(2, healthAddrs[1]); err != nil {
+		a.ctx.GetT().Fatalf("node health check failed: %v", err)
+	}
+
 	return a
 }

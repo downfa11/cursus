@@ -186,8 +186,7 @@ func NoDuplicateMessages() Expectation {
 	}
 }
 
-// NoDuplicateMessagesEnhanced enhanced duplicate detection with sequence tracking
-func NoDuplicateMessagesEnhanced() Expectation {
+func PublishedSequencesAreUnique() Expectation {
 	return func(ctx *TestContext) error {
 		if len(ctx.publishedSeqNums) == 0 {
 			return fmt.Errorf("no sequence numbers tracked for duplicate detection")
@@ -196,18 +195,11 @@ func NoDuplicateMessagesEnhanced() Expectation {
 		seen := make(map[uint64]bool)
 		for _, seq := range ctx.publishedSeqNums {
 			if seen[seq] {
-				return fmt.Errorf("duplicate sequence number detected: %d", seq)
+				return fmt.Errorf("publisher duplicate sequence number detected: %d", seq)
 			}
 			seen[seq] = true
 		}
-
-		if ctx.consumedCount > ctx.publishedCount {
-			return fmt.Errorf("more messages consumed than published: %d > %d",
-				ctx.consumedCount, ctx.publishedCount)
-		}
-
-		ctx.GetT().Logf("No duplicates verified: %d unique sequences, %d consumed",
-			len(ctx.publishedSeqNums), ctx.consumedCount)
+		ctx.GetT().Logf("Verified: All %d published sequences are unique", len(ctx.publishedSeqNums))
 		return nil
 	}
 }

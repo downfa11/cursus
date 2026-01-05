@@ -283,48 +283,54 @@ func (d *DiskHandler) GetCurrentSegment() int {
 }
 
 func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
-	if len(batch) > 0 {
-		if err := d.writeBatch(batch); err != nil {
-			util.Error("writeBatch failed: %v", err)
-		}
-		batch = batch[:0]
-	}
-
 	for {
+		stop := false
 		select {
 		case msg, ok := <-d.writeCh:
 			if !ok {
-				goto finalize
-			}
-			batch = append(batch, msg)
-			if len(batch) >= d.batchSize {
-				if err := d.writeBatch(batch); err != nil {
-					util.Error("writeBatch failed: %v", err)
-				}
-				batch = batch[:0]
+				stop = true
+			} else {
+				batch = append(batch, msg)
 			}
 		default:
-			goto finalize
+			stop = true
+		}
+
+		if len(batch) >= d.batchSize {
+			if err := d.writeBatch(batch); err != nil {
+				util.Error("writeBatch failed: %v", err)
+			}
+			batch = batch[:0]
+		}
+
+		if stop {
+			break
 		}
 	}
 
-finalize:
 	if len(batch) > 0 {
 		if err := d.writeBatch(batch); err != nil {
-			util.Error("writeBatch failed: %v", err)
+			util.Error("finalize writeBatch failed: %v", err)
 		}
 	}
 
 	d.ioMu.Lock()
 	defer d.ioMu.Unlock()
+
 	if d.writer != nil {
 		if err := d.writer.Flush(); err != nil {
-			util.Error("writer flush failed", err)
+			util.Error("writer flush failed: %v", err)
 		}
+		d.writer = nil
+	}
+
+	if d.file != nil {
 		if err := d.file.Sync(); err != nil {
-			util.Error("file sync failed", err)
+			util.Error("file sync failed: %v", err)
 		}
-		d.file.Close()
+		if err := d.file.Close(); err != nil {
+			util.Error("file close failed: %v", err)
+		}
 		d.file = nil
 	}
 }

@@ -152,7 +152,11 @@ func countMessagesInFile(filePath string) (int, error) {
 	return count, nil
 }
 
-func (d *DiskHandler) AppendMessageSync(topic string, partition int, offset uint64, payload string) error {
+func (d *DiskHandler) AppendMessageSync(topic string, partition int, payload string) error {
+	d.mu.Lock()
+	offset := d.AbsoluteOffset
+	d.mu.Unlock()
+
 	if err := d.WriteDirect(topic, partition, offset, payload); err != nil {
 		return fmt.Errorf("WriteDirect failed: %w", err)
 	}
@@ -160,9 +164,12 @@ func (d *DiskHandler) AppendMessageSync(topic string, partition int, offset uint
 }
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
-func (d *DiskHandler) AppendMessage(topic string, partition int, offset uint64, payload string) {
-	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)",
-		len(payload), cap(d.writeCh), len(d.writeCh))
+func (d *DiskHandler) AppendMessage(topic string, partition int, payload string) {
+	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)", len(payload), cap(d.writeCh), len(d.writeCh))
+
+	d.mu.Lock()
+	offset := d.AbsoluteOffset
+	d.mu.Unlock()
 
 	diskMsg := types.DiskMessage{
 		Topic:     topic,

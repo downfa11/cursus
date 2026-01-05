@@ -34,11 +34,12 @@ type Partition struct {
 	closed        bool
 	streamManager *stream.StreamManager
 	newMessageCh  chan struct{}
+	broadcastCh   chan types.Message
 }
 
 type DiskAppender interface {
-	AppendMessage(topic string, partition int, offset uint64, payload string)
-	AppendMessageSync(topic string, partition int, offset uint64, payload string) error
+	AppendMessage(topic string, partition int, payload string)
+	AppendMessageSync(topic string, partition int, payload string) error
 }
 
 // NewTopic initializes a topic with partitions.
@@ -68,8 +69,9 @@ func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager
 		dh:            dh,
 		streamManager: sm,
 		newMessageCh:  make(chan struct{}, 1),
+		broadcastCh:   make(chan types.Message, 10000),
 	}
-
+	go p.runBroadcaster()
 	return p
 }
 
@@ -90,6 +92,9 @@ func (t *Topic) GetPartitionForMessage(msg types.Message) int {
 
 // AddPartitions extends the topic with new partitions.
 func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	for i := 0; i < extra; i++ {
 		idx := len(t.Partitions)
 		dh, err := hp.GetHandler(t.Name, idx)

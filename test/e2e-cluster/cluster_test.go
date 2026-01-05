@@ -7,6 +7,7 @@ import (
 // TestISRWithAllAcks tests ISR behavior with acks=all
 func TestISRWithAllAcks(t *testing.T) {
 	ctx := GivenClusterRestart(t).
+		WithClusterSize(3).
 		WithTopic("isr-test").
 		WithPartitions(1).
 		WithNumMessages(50).

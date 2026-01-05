@@ -139,7 +139,7 @@ func (c *Consumer) Start() error {
 	for _, pid := range assignments {
 		offset, err := c.fetchOffset(pid)
 		if err != nil {
-			util.Error("Failed to fetch offset for P%d: %v", pid, err)
+			util.Warn("Failed to fetch offset for P%d: %v", pid, err)
 			offset = 0
 		}
 

@@ -66,7 +66,8 @@ func GivenCluster(t *testing.T) *ClusterTestContext {
 }
 
 func GivenClusterRestart(t *testing.T) *ClusterTestContext {
-	cmd := exec.Command("docker-compose", "-f", composeFile, "up", "-d")
+	_ = exec.Command("docker-compose", "-f", composeFile, "down", "-v", "--remove-orphans").Run()
+	cmd := exec.Command("docker-compose", "-f", composeFile, "up", "-d", "--force-recreate")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to start docker-compose: %v\nOutput: %s", err, string(output))
 	}
@@ -80,7 +81,7 @@ func GivenClusterRestart(t *testing.T) *ClusterTestContext {
 	})
 
 	ctx := GivenCluster(t)
-	t.Logf("Waiting for all %d nodes to be healthy...", ctx.clusterSize)
+	t.Logf("Cluster startup initiated. Size: %d, MinISR: %d", ctx.clusterSize, ctx.minInSyncReplicas)
 
 	actions := ctx.WhenCluster()
 	if err := actions.checkAllNodesHealth(); err != nil {
@@ -113,6 +114,7 @@ func (c *ClusterTestContext) WithAcks(acks string) *ClusterTestContext {
 func (c *ClusterTestContext) WithClusterSize(size int) *ClusterTestContext {
 	c.clusterSize = size
 	c.TestContext.SetBrokerAddrs(clusterBrokerAddrs(size))
+	c.GetT().Logf("Cluster size configured to: %d", size)
 	return c
 }
 

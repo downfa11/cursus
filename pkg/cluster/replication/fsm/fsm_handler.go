@@ -44,10 +44,7 @@ func (f *BrokerFSM) UnregisterNotifier(requestID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if ch, ok := f.notifiers[requestID]; ok {
-		close(ch)
-		delete(f.notifiers, requestID)
-	}
+	delete(f.notifiers, requestID)
 }
 
 func (f *BrokerFSM) notify(requestID string, result interface{}) {

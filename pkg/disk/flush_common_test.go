@@ -77,9 +77,9 @@ func TestFlushLoopAsync(t *testing.T) {
 	dh := setupDiskHandler(t)
 	defer dh.Close()
 
-	dh.AppendMessage("testTopic", 0, 0, "async1")
-	dh.AppendMessage("testTopic", 0, 1, "async2")
-	dh.AppendMessage("testTopic", 0, 2, "async3")
+	dh.AppendMessage("testTopic", 0, "async1")
+	dh.AppendMessage("testTopic", 0, "async2")
+	dh.AppendMessage("testTopic", 0, "async3")
 
 	t.Logf("waiting for flushLoop to process messages...")
 	<-time.After(200 * time.Millisecond)
@@ -128,6 +128,51 @@ func TestReadMessagesWithMetadata(t *testing.T) {
 		}
 		if msg.Payload != expected.payload {
 			t.Errorf("message %d: expected payload %q, got %q", i, expected.payload, msg.Payload)
+		}
+	}
+}
+
+func TestDrainAndShutdown(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		LogDir:             tmpDir,
+		DiskFlushBatchSize: 2,
+		LingerMS:           100,
+		DiskWriteTimeoutMS: 500,
+		SegmentRollTimeMS:  500,
+		SegmentSize:        1024,
+	}
+
+	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0, cfg.SegmentSize)
+	if err != nil {
+		t.Fatalf("failed to create DiskHandler: %v", err)
+	}
+
+	testMsgs := []string{"shutdown_1", "shutdown_2"}
+	for _, m := range testMsgs {
+		dh.AppendMessage("testTopic", 0, m)
+	}
+
+	dh.Close()
+
+	newDh, err := disk.NewDiskHandler(cfg, "testTopic", 0, cfg.SegmentSize)
+	if err != nil {
+		t.Fatalf("failed to reopen DiskHandler: %v", err)
+	}
+	defer newDh.Close()
+
+	msgs, err := newDh.ReadMessages(0, 2)
+	if err != nil {
+		t.Fatalf("failed to read messages: %v", err)
+	}
+
+	if len(msgs) != len(testMsgs) {
+		t.Fatalf("Data lost! expected %d, got %d", len(testMsgs), len(msgs))
+	}
+
+	for i, m := range msgs {
+		if m.Payload != testMsgs[i] {
+			t.Errorf("mismatch at %d: %s != %s", i, m.Payload, testMsgs[i])
 		}
 	}
 }

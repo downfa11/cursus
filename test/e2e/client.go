@@ -88,19 +88,22 @@ func (bc *BrokerClient) sendCommandAndGetResponse(cmdTopic, cmdPayload string, r
 	}
 
 	bc.mu.Lock()
-	conn := bc.conn
-	bc.mu.Unlock()
+	defer bc.mu.Unlock()
+
+	if bc.conn == nil || bc.closed {
+		return "", fmt.Errorf("connection is closed")
+	}
 
 	cmdBytes := util.EncodeMessage(cmdTopic, cmdPayload)
-	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
+	if err := util.WriteWithLength(bc.conn, cmdBytes); err != nil {
 		return "", fmt.Errorf("send command: %w", err)
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+	if err := bc.conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 		return "", fmt.Errorf("set read deadline: %w", err)
 	}
 
-	respBuf, err := util.ReadWithLength(conn)
+	respBuf, err := util.ReadWithLength(bc.conn)
 
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)

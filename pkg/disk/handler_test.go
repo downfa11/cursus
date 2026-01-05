@@ -30,8 +30,8 @@ func TestDiskHandlerBasic(t *testing.T) {
 	defer dh.Close()
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
-	for i, msg := range messages {
-		dh.AppendMessage(topic, 0, uint64(i), msg)
+	for _, msg := range messages {
+		dh.AppendMessage(topic, 0, msg)
 	}
 
 	time.Sleep(150 * time.Millisecond)
@@ -85,8 +85,8 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	}
 	defer dh.Close()
 
-	dh.AppendMessage(topic, 0, 0, "first")
-	dh.AppendMessage(topic, 0, 1, "second")
+	dh.AppendMessage(topic, 0, "first")
+	dh.AppendMessage(topic, 0, "second")
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -140,8 +140,8 @@ func TestDiskHandlerRotation(t *testing.T) {
 	defer dh.Close()
 
 	msgs := []string{"12345", "67890", "abcde"}
-	for i, m := range msgs {
-		dh.AppendMessage(topic, 0, uint64(i), m)
+	for _, m := range msgs {
+		dh.AppendMessage(topic, 0, m)
 	}
 
 	time.Sleep(50 * time.Millisecond)

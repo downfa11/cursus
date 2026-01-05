@@ -51,11 +51,18 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 		failedCount = 0
 	}
 
+	successRate := 0.0
+	if totalTarget > 0 {
+		successRate = (float64(sentMessages) / float64(totalTarget)) * 100
+	}
+
 	fmt.Fprint(w, "\r\n")
 	fmt.Fprintln(w, sep)
 	fmt.Fprintln(w, "📊 PRODUCER BENCHMARK SUMMARY")
 	fmt.Fprintf(w, "%-28s : %d\n", "Partitions", len(partitionStats))
 	fmt.Fprintf(w, "%-28s : %d\n", "Total Batches", totalBatches)
+	fmt.Fprintf(w, "%-28s : %d / %d (%.1f%%)\n", "Targeted / Published", totalTarget, sentMessages, successRate)
+	fmt.Fprintf(w, "%-28s : %d\n", "Failed messages", failedCount)
 	fmt.Fprintf(w, "%-28s : %d\n", "Total messages published", sentMessages)
 	fmt.Fprintf(w, "%-28s : %.3fs\n", "Publish elapsed Time", totalDuration.Seconds())
 	fmt.Fprintf(w, "%-28s : %.2f batches/s\n", "Publish Batch Throughput", batchesPerSec)

@@ -434,7 +434,11 @@ func (p *Publisher) sendWithRetry(payload []byte, part int) (*types.AckResponse,
 		}
 
 		if err := conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond)); err != nil {
+			lastErr = fmt.Errorf("set write deadline failed: %w", err)
 			util.Error("⚠️ SetWriteDeadline error: %v", err)
+
+			time.Sleep(time.Duration(backoff) * time.Millisecond)
+			backoff = min(backoff*2, p.config.MaxBackoffMS)
 			continue
 		}
 
@@ -529,7 +533,7 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 			return nil, err
 		}
 
-		util.Info("producerID mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
+		util.Info("missing producerID: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
 		return nil, fmt.Errorf("incomplete ack response: missing required fields")
 	}
 

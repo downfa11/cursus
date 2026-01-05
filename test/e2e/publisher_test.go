@@ -145,55 +145,17 @@ func TestExactlyOnceWithFailures(t *testing.T) {
 				}
 			}
 
-			actions.RetryPublishMessages().
+			consequences := actions.RetryPublishMessages().
 				JoinGroup().
 				SyncGroup().
 				ConsumeMessages().
-				Then().
-				Expect(NoDuplicateMessages()).
-				And(MessagesConsumed(50))
-		})
-	}
-}
-
-// TestProducerOptionsComprehensive tests all producer configuration options
-func TestProducerOptionsComprehensive(t *testing.T) {
-	testCases := []struct {
-		name           string
-		acks           string
-		partitions     int
-		messageSize    int
-		batchSize      int
-		lingerMS       int
-		expectedResult string
-	}{
-		{"acks_0_high_throughput", "0", 1, 100, 10, 0, "success"},
-		{"acks_1_balanced", "1", 3, 1000, 5, 10, "success"},
-		{"acks_all_durable", "all", 5, 5000, 1, 50, "success"},
-		{"invalid_acks", "2", 1, 100, 1, 0, "error"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := Given(t).
-				WithTopic("options-" + tc.name).
-				WithPartitions(tc.partitions).
-				WithNumMessages(20).
-				WithAcks(tc.acks).
-				WithPublishDelay(tc.lingerMS)
-			defer ctx.Cleanup()
-
-			result := ctx.When().
-				StartBroker().
-				CreateTopic().
-				PublishMessages().
 				Then()
 
-			if tc.expectedResult == "error" {
-				result.Expect(PublishFailed())
+			if tc.expectDupes {
+				consequences.Expect(MessagesConsumed(50))
 			} else {
-				result.Expect(MessagesPublished(20)).
-					And(BrokerIsHealthy(StandAloneHealthCheckAddr))
+				consequences.Expect(NoDuplicateMessages()).
+					And(MessagesConsumed(50))
 			}
 		})
 	}

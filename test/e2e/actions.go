@@ -118,8 +118,8 @@ func (a *Actions) SyncGroup() *Actions {
 		a.ctx.t.Fatalf("Cannot sync group: Member ID or Generation is missing. Did you call JoinGroup()?")
 	}
 
-	a.ctx.t.Logf("Syncing group '%s' (Gen %d) to receive partition assignments...", a.ctx.consumerGroup, client.generation)
-	assignedPartitions, err := client.syncGroup(a.ctx.topic, a.ctx.consumerGroup, client.generation, client.memberID)
+	a.ctx.t.Logf("Syncing group '%s' (Generation %d) to receive partition assignments...", a.ctx.consumerGroup, client.generation)
+	assignedPartitions, err := client.SyncGroup(a.ctx.topic, a.ctx.consumerGroup, client.generation, client.memberID)
 	if err != nil {
 		a.ctx.t.Fatalf("Group sync failed: %v", err)
 	}
@@ -147,13 +147,8 @@ func (a *Actions) ConsumeMessagesFromTopic(topic string) *Actions {
 
 	totalConsumed := 0
 	for _, partition := range a.ctx.assignedPartitions {
-		messages, err := client.ConsumeMessages(
-			topic,
-			partition,
-			a.ctx.consumerGroup,
-			client.memberID,
-			client.generation,
-			5*time.Second,
+		messages, offsets, err := client.ConsumeMessagesWithOffsets(
+			topic, partition, a.ctx.consumerGroup, client.memberID, client.generation, 5*time.Second,
 		)
 
 		if err != nil {
@@ -164,11 +159,14 @@ func (a *Actions) ConsumeMessagesFromTopic(topic string) *Actions {
 		totalConsumed += len(messages)
 
 		if count > 0 {
-			err := client.CommitOffset(topic, partition, a.ctx.consumerGroup, uint64(count))
+			lastOffset := offsets[len(offsets)-1]
+			nextOffset := lastOffset + 1
+
+			err := client.CommitOffset(topic, partition, a.ctx.consumerGroup, nextOffset)
 			if err != nil {
-				a.ctx.t.Fatalf("Failed to auto-commit offset for partition %d: %v", partition, err)
+				a.ctx.t.Fatalf("Failed to commit offset %d for partition %d: %v", nextOffset, partition, err)
 			}
-			a.ctx.t.Logf("Successfully committed offset %d for partition %d", count, partition)
+			a.ctx.t.Logf("Successfully committed NEXT offset %d for partition %d", nextOffset, partition)
 		}
 	}
 

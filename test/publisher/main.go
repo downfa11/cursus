@@ -41,7 +41,6 @@ func main() {
 	start := time.Now()
 
 	var (
-		errorCount uint64
 		wg         sync.WaitGroup
 		errSummary sync.Map
 	)
@@ -68,17 +67,13 @@ func main() {
 				}
 
 				if _, err := pub.PublishMessage(msg); err != nil {
-					atomic.AddUint64(&errorCount, 1)
-
 					errMsg := err.Error()
-					if val, ok := errSummary.Load(errMsg); ok {
-						atomic.AddUint64(val.(*uint64), 1)
-					} else {
-						var count uint64 = 1
-						actual, loaded := errSummary.LoadOrStore(errMsg, &count)
-						if loaded {
-							atomic.AddUint64(actual.(*uint64), 1)
-						}
+					newCounter := new(uint64)
+					*newCounter = 1
+
+					actual, loaded := errSummary.LoadOrStore(errMsg, newCounter)
+					if loaded {
+						atomic.AddUint64(actual.(*uint64), 1)
 					}
 
 					util.Debug("publish failed: %v", err)
