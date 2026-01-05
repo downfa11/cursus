@@ -238,3 +238,14 @@ func contains(slice []int, item int) bool {
 	}
 	return false
 }
+
+func (c *Coordinator) getOffsetSafe(group, topic string, partition int) (uint64, bool) {
+	if topics, ok := c.offsets[group]; ok {
+		if partitions, ok := topics[topic]; ok {
+			if offset, ok := partitions[partition]; ok {
+				return offset, true
+			}
+		}
+	}
+	return 0, false
+}

@@ -27,7 +27,12 @@ func (bc *BrokerClient) PublishIdempotent(topic, producerID string, seqNum uint6
 		topic, acks, producerID, seqNum, epoch, payload)
 
 	if acks == "0" {
-		conn, err := net.Dial("tcp", bc.addrs[0])
+		addr, err := bc.getPrimaryAddr()
+		if err != nil {
+			return fmt.Errorf("publish idempotent failed: %w", err)
+		}
+
+		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
@@ -44,7 +49,12 @@ func (bc *BrokerClient) PublishSimple(topic, payload, acks string) error {
 	publishCmd := fmt.Sprintf("PUBLISH topic=%s acks=%s message=%s", topic, acks, payload)
 
 	if acks == "0" {
-		conn, err := net.Dial("tcp", bc.addrs[0])
+		addr, err := bc.getPrimaryAddr()
+		if err != nil {
+			return fmt.Errorf("publish idempotent failed: %w", err)
+		}
+
+		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
@@ -299,7 +309,10 @@ func (bc *BrokerClient) ConsumeMessagesWithOffsets(topic string, partition int, 
 		return nil, nil, fmt.Errorf("connect: %w", err)
 	}
 
-	startOffset, _ := bc.FetchCommittedOffset(topic, partition, consumerGroup)
+	startOffset, err := bc.FetchCommittedOffset(topic, partition, consumerGroup)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch committed offset: %w", err)
+	}
 
 	bc.mu.Lock()
 	defer bc.mu.Unlock()

@@ -23,7 +23,7 @@ func (ch *CommandHandler) isAuthorizedForPartition(topic string, partition int) 
 	return ch.Cluster.IsAuthorized(topic, partition)
 }
 
-// todo. isLeaderAndForward checks if the current node is the cluster leader
+// todo. (issues #27) isLeaderAndForward checks if the current node is the cluster leader
 func (ch *CommandHandler) isLeaderAndForward(cmd string) (string, bool, error) {
 	if !ch.Config.EnabledDistribution || ch.Cluster == nil || ch.Cluster.RaftManager == nil {
 		return "", false, nil

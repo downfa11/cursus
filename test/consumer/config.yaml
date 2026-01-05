@@ -1,6 +1,7 @@
 broker_addrs:  
   - "broker:9000" 
 enable_benchmark: true
+enable_correctness: true
 num_messages: 100000
 
 topic: "bench-topic"

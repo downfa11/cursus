@@ -102,9 +102,10 @@ func main() {
 		}
 
 		stats := pub.GetPartitionStats()
-		bench.PrintBenchmarkSummaryFixed(stats, sentMessages, total, duration, errors)
+		latencies := pub.GetLatencies()
 
-		time.Sleep(time.Second)
+		util.Info("🎉 Benchmark completed successfully!")
+		bench.PrintBenchmarkSummaryFixedTo(os.Stdout, stats, sentMessages, total, duration, errors, latencies)
 		os.Exit(0)
 	}
 

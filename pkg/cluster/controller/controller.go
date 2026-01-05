@@ -56,7 +56,7 @@ func (cc *ClusterController) IsLeader() bool {
 	return false
 }
 
-// todo. Delegate authorization to partition-level leader checks in future releases.
+// todo. (issues #27) Delegate authorization to partition-level leader checks in future releases.
 func (cc *ClusterController) IsAuthorized(topic string, partition int) bool {
 	return cc.IsLeader()
 }

@@ -166,7 +166,7 @@ func (a *Actions) ConsumeMessagesFromTopic(topic string) *Actions {
 			if err != nil {
 				a.ctx.t.Fatalf("Failed to commit offset %d for partition %d: %v", nextOffset, partition, err)
 			}
-			a.ctx.t.Logf("Successfully committed NEXT offset %d for partition %d", nextOffset, partition)
+			a.ctx.t.Logf("Successfully committed next offset %d for partition %d", nextOffset, partition)
 		}
 	}
 

@@ -119,6 +119,9 @@ func (sd *ServiceDiscovery) RemoveNode(nodeID string) (string, error) {
 func (sd *ServiceDiscovery) StartReconciler(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
+		defer ticker.Stop()
+		util.Info("started for broker %s", sd.brokerID)
+
 		for {
 			select {
 			case <-ticker.C:
@@ -127,6 +130,7 @@ func (sd *ServiceDiscovery) StartReconciler(ctx context.Context) {
 				}
 				sd.reconcile()
 			case <-ctx.Done():
+				util.Info("stopping for broker %s due to context cancellation", sd.brokerID)
 				return
 			}
 		}
@@ -136,6 +140,7 @@ func (sd *ServiceDiscovery) StartReconciler(ctx context.Context) {
 func (sd *ServiceDiscovery) reconcile() {
 	future := sd.rm.GetConfiguration()
 	if err := future.Error(); err != nil {
+		util.Error("Failed to get Raft configuration: %v", err)
 		return
 	}
 	raftServers := future.Configuration().Servers
@@ -151,14 +156,16 @@ func (sd *ServiceDiscovery) reconcile() {
 	for _, b := range fsmBrokers {
 		fsmMap[b.ID] = true
 		if _, exists := raftMap[b.ID]; !exists {
-			util.Warn("Reconciler: Node %s found in FSM but missing in Raft. Cleaning up...", b.ID)
-			_ = sd.rm.ApplyCommand("DEREGISTER", []byte(b.ID))
+			util.Warn("Node %s found in FSM but missing in Raft. Cleaning up...", b.ID)
+			if err := sd.rm.ApplyCommand("DEREGISTER", []byte(b.ID)); err != nil {
+				util.Error("Failed to apply DEREGISTER for node %s: %v", b.ID, err)
+			}
 		}
 	}
 
 	for id, addr := range raftMap {
 		if !fsmMap[id] {
-			util.Warn("Reconciler: Node %s found in Raft but missing in FSM. Repairing...", id)
+			util.Warn("Node %s found in Raft but missing in FSM. Repairing...", id)
 			broker := &fsm.BrokerInfo{
 				ID:       id,
 				Addr:     addr,
@@ -167,10 +174,14 @@ func (sd *ServiceDiscovery) reconcile() {
 			}
 			data, err := json.Marshal(broker)
 			if err != nil {
-				util.Error("failed to marshal: %w", err)
-				return
+				util.Error("Failed to marshal broker info for node %s: %v", id, err)
+				continue
 			}
-			_ = sd.rm.ApplyCommand("REGISTER", data)
+			if err := sd.rm.ApplyCommand("REGISTER", data); err != nil {
+				util.Error("Failed to apply REGISTER repair for node %s: %v", id, err)
+			} else {
+				util.Info("Successfully repaired FSM for node %s", id)
+			}
 		}
 	}
 }

@@ -32,6 +32,10 @@ func (m *MockRaft) AddVoter(id raft.ServerID, addr raft.ServerAddress, idx uint6
 }
 
 func (m *MockRaft) RemoveServer(id raft.ServerID, idx uint64, t time.Duration) raft.IndexFuture {
+	if m.RemoveServerFunc == nil {
+		return &MockFuture{}
+	}
+
 	return m.RemoveServerFunc(id, idx, t)
 }
 
@@ -57,6 +61,10 @@ func (m *MockRaft) Shutdown() raft.Future {
 }
 
 func (m *MockRaft) BootstrapCluster(c raft.Configuration) raft.Future {
+	if m.BootstrapClusterFunc == nil {
+		return &MockFuture{}
+	}
+
 	return m.BootstrapClusterFunc(c)
 }
 

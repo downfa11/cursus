@@ -40,30 +40,29 @@ func TestGenerateMessage(t *testing.T) {
 func TestPrintBenchmarkSummaryFixedTo(t *testing.T) {
 	stats := []bench.PartitionStat{
 		{PartitionID: 0, BatchCount: 10, AvgDuration: 20 * time.Millisecond},
-		{PartitionID: 1, BatchCount: 15, AvgDuration: 25 * time.Millisecond},
+	}
+
+	latencies := make([]time.Duration, 100)
+	for i := 0; i < 100; i++ {
+		latencies[i] = time.Duration(i) * time.Millisecond
 	}
 
 	totalTarget := 1000
 	sentMessages := 800
 	totalDuration := 2 * time.Second
-
-	errSummary := map[string]uint64{
-		"connection timeout": 150,
-		"broker full":        50,
-	}
+	errSummary := map[string]uint64{"timeout": 200}
 
 	var buf bytes.Buffer
-	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, sentMessages, totalTarget, totalDuration, errSummary)
+	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, sentMessages, totalTarget, totalDuration, errSummary, latencies)
 
 	got := buf.String()
 
 	expectedKeywords := []string{
-		"BENCHMARK SUMMARY",
+		"PRODUCER BENCHMARK SUMMARY",
 		"Total Target",
-		"Successfully Sent",
-		"Failed Messages",
-		"Throughput",
-		"Partition Breakdown",
+		"Latency P95",
+		"Latency P99",
+		"20.0%",
 	}
 
 	for _, keyword := range expectedKeywords {
@@ -71,27 +70,20 @@ func TestPrintBenchmarkSummaryFixedTo(t *testing.T) {
 			t.Errorf("Output missing keyword '%s'", keyword)
 		}
 	}
-
-	if !strings.Contains(got, "Error Root Cause Analysis") {
-		t.Error("Output missing 'Error Root Cause Analysis' section")
-	}
-	if !strings.Contains(got, "connection timeout") {
-		t.Error("Output missing specific error message 'connection timeout'")
-	}
-
-	if !strings.Contains(got, "20.00%") {
-		t.Errorf("Output should contain correct failure percentage '20.00%%', got: %s", got)
-	}
 }
 
 func TestPrintBenchmarkSummaryNoErrors(t *testing.T) {
 	stats := []bench.PartitionStat{{PartitionID: 0, BatchCount: 5, AvgDuration: 10 * time.Millisecond}}
 	totalTarget := 100
 	sentMessages := 100
+
+	testDuration := time.Second
+	testLatencies := []time.Duration{10 * time.Millisecond}
+
 	errSummary := make(map[string]uint64)
 
 	var buf bytes.Buffer
-	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, sentMessages, totalTarget, time.Second, errSummary)
+	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, sentMessages, totalTarget, testDuration, errSummary, testLatencies)
 
 	got := buf.String()
 	if strings.Contains(got, "Error Root Cause Analysis") {

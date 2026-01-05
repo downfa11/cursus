@@ -33,3 +33,12 @@ func CheckBrokerHealth(healthCheckURLs []string) error {
 	}
 	return nil
 }
+
+func (bc *BrokerClient) getPrimaryAddr() (string, error) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	if len(bc.addrs) == 0 {
+		return "", fmt.Errorf("broker address list is empty")
+	}
+	return bc.addrs[0], nil
+}

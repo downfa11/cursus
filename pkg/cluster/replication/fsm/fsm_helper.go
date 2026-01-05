@@ -21,33 +21,27 @@ func errorAckResponse(msg, producerID string, epoch int64) types.AckResponse {
 }
 
 func (f *BrokerFSM) parsePartitionCommand(data string) (string, *PartitionMetadata, error) {
-	parts := strings.SplitN(data, ":", 3)
-
-	if len(parts) != 3 {
-		return "", nil, fmt.Errorf("invalid PARTITION command format: expected PARTITION:key:json")
+	startIdx := strings.Index(data, "{")
+	if startIdx == -1 {
+		return "", nil, fmt.Errorf("invalid PARTITION command: JSON metadata not found")
 	}
 
-	key := parts[1]
+	prefix := data[:startIdx]
+	prefix = strings.TrimPrefix(prefix, "PARTITION:")
+	key := strings.TrimSuffix(prefix, ":")
+
+	if key == "" {
+		return "", nil, fmt.Errorf("invalid PARTITION command: missing key")
+	}
+
 	var metadata PartitionMetadata
-	if err := json.Unmarshal([]byte(parts[2]), &metadata); err != nil {
-		util.Error("Failed to unmarshal partition metadata: %v", err)
+	dec := json.NewDecoder(strings.NewReader(data[startIdx:]))
+	if err := dec.Decode(&metadata); err != nil {
+		util.Error("Failed to unmarshal partition metadata for key %s: %v", key, err)
 		return "", nil, err
 	}
 
 	return key, &metadata, nil
-}
-
-// extractJSON locates the JSON object within a string.
-func extractJSON(data string) string {
-	start := strings.Index(data, "{")
-	if start == -1 {
-		return ""
-	}
-	end := strings.LastIndex(data, "}")
-	if end == -1 || end < start {
-		return ""
-	}
-	return data[start : end+1]
 }
 
 func getStringField(data map[string]interface{}, key string) (string, error) {

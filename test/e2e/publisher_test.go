@@ -152,7 +152,8 @@ func TestExactlyOnceWithFailures(t *testing.T) {
 				Then()
 
 			if tc.expectDupes {
-				consequences.Expect(MessagesConsumed(50))
+				consequences.Expect(DuplicatesDetected()).
+					And(PublisherRetriedSuccessfully())
 			} else {
 				consequences.Expect(NoDuplicateMessages()).
 					And(MessagesConsumed(50))

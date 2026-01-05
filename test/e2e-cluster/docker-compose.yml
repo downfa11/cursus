@@ -48,6 +48,9 @@ services:
       interval: 3s
       timeout: 1s
       retries: 3
+    depends_on:
+      broker-1:
+        condition: service_healthy
     networks:
       - cluster_network
 
@@ -74,6 +77,9 @@ services:
       interval: 3s
       timeout: 1s
       retries: 3
+    depends_on:
+      broker-1:
+        condition: service_healthy
     networks:
       - cluster_network
 

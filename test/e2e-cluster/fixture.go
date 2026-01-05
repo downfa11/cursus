@@ -18,7 +18,6 @@ type ClusterTestContext struct {
 	*e2e.TestContext
 	clusterSize       int
 	minInSyncReplicas int
-	stopPublish       chan struct{}
 }
 
 func brokerPort(nodeIndex int) int {
@@ -60,7 +59,6 @@ func GivenCluster(t *testing.T) *ClusterTestContext {
 		TestContext:       ctx,
 		clusterSize:       clusterSize,
 		minInSyncReplicas: 2,
-		stopPublish:       make(chan struct{}),
 	}
 }
 

@@ -34,16 +34,16 @@ func (d *DiskHandler) flushLoop() {
 
 			if len(batch) >= d.batchSize {
 				util.Debug("Batch size threshold reached, flushing %d messages", len(batch))
-				if err := d.writeBatch(batch); err != nil {
-					util.Error("writeBatch failed: %v", err)
+				if err := d.WriteBatch(batch); err != nil {
+					util.Error("WriteBatch failed: %v", err)
 				}
 				batch = batch[:0]
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
 				util.Debug("Flushing %d messages on timer", len(batch))
-				if err := d.writeBatch(batch); err != nil {
-					util.Error("writeBatch failed: %v", err)
+				if err := d.WriteBatch(batch); err != nil {
+					util.Error("WriteBatch failed: %v", err)
 				}
 				batch = batch[:0]
 			}
@@ -87,8 +87,8 @@ func (d *DiskHandler) syncLoop() {
 	}
 }
 
-// writeBatch writes a batch of messages into the current segment file.
-func (d *DiskHandler) writeBatch(batch []types.DiskMessage) error {
+// WriteBatch writes a batch of messages into the current segment file.
+func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -144,8 +144,6 @@ func (d *DiskHandler) writeBatch(batch []types.DiskMessage) error {
 	}
 
 	d.CurrentOffset += uint64(len(buffer))
-	d.AbsoluteOffset += uint64(len(serializedMsgs))
-
 	return nil
 }
 
@@ -194,8 +192,6 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, pa
 	}
 
 	d.CurrentOffset += totalLen
-	d.AbsoluteOffset++
-
 	return nil
 }
 
@@ -246,7 +242,7 @@ func (d *DiskHandler) Flush() {
 
 perform_write:
 	if len(batch) > 0 {
-		if err := d.writeBatch(batch); err != nil {
+		if err := d.WriteBatch(batch); err != nil {
 			return
 		}
 		return
@@ -297,8 +293,8 @@ func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
 		}
 
 		if len(batch) >= d.batchSize {
-			if err := d.writeBatch(batch); err != nil {
-				util.Error("writeBatch failed: %v", err)
+			if err := d.WriteBatch(batch); err != nil {
+				util.Error("WriteBatch failed: %v", err)
 			}
 			batch = batch[:0]
 		}
@@ -309,8 +305,8 @@ func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
 	}
 
 	if len(batch) > 0 {
-		if err := d.writeBatch(batch); err != nil {
-			util.Error("finalize writeBatch failed: %v", err)
+		if err := d.WriteBatch(batch); err != nil {
+			util.Error("finalize WriteBatch failed: %v", err)
 		}
 	}
 

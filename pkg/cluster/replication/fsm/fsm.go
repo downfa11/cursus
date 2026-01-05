@@ -98,15 +98,19 @@ func (f *BrokerFSM) SetCoordinator(cd *coordinator.Coordinator) {
 
 func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	data := string(log.Data)
-
 	var reqID string
-	if strings.Contains(data, "{") {
+
+	if startIdx := strings.Index(data, "{"); startIdx != -1 {
+		dec := json.NewDecoder(strings.NewReader(data[startIdx:]))
 		var meta struct {
 			ReqID string `json:"req_id"`
 		}
 
-		_ = json.Unmarshal([]byte(extractJSON(data)), &meta)
-		reqID = meta.ReqID
+		if err := dec.Decode(&meta); err != nil {
+			util.Error("FSM Apply: failed to decode req_id: %v", err)
+		} else {
+			reqID = meta.ReqID
+		}
 	}
 
 	var res interface{}
@@ -203,8 +207,16 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 		metadataCopy[k] = &metaCopy
 	}
 	producerStateCopy := make(map[string]map[int]map[string]int64, len(f.producerState))
-	for k, v := range f.producerState {
-		producerStateCopy[k] = v
+	for topic, partitions := range f.producerState {
+		partitionMap := make(map[int]map[string]int64, len(partitions))
+		for pID, producers := range partitions {
+			producerMap := make(map[string]int64, len(producers))
+			for prodID, seq := range producers {
+				producerMap[prodID] = seq
+			}
+			partitionMap[pID] = producerMap
+		}
+		producerStateCopy[topic] = partitionMap
 	}
 
 	util.Debug("Creating FSM snapshot")
@@ -245,22 +257,29 @@ func (f *BrokerFSM) persistBatch(topicName string, partition int, msgs []types.M
 	}
 
 	base := dh.GetAbsoluteOffset()
-	serializedBatch := make([]string, len(msgs))
-	for i := range msgs {
-		m := msgs[i]
-		m.Offset = base + uint64(i)
 
-		data, err := util.SerializeMessage(m)
+	diskMsgs := make([]types.DiskMessage, len(msgs))
+	for i := range msgs {
+		msgs[i].Offset = base + uint64(i)
+
+		serialized, err := util.SerializeMessage(msgs[i])
 		if err != nil {
-			return fmt.Errorf("serialization error at index %d: %w", i, err)
+			return fmt.Errorf("failed to serialize message at index %d: %w", i, err)
 		}
-		serializedBatch[i] = string(data)
+
+		diskMsgs[i] = types.DiskMessage{
+			Topic:      topicName,
+			Partition:  int32(partition),
+			Offset:     msgs[i].Offset,
+			ProducerID: msgs[i].ProducerID,
+			SeqNum:     msgs[i].SeqNum,
+			Epoch:      msgs[i].Epoch,
+			Payload:    string(serialized),
+		}
 	}
 
-	for i, data := range serializedBatch {
-		if err := dh.WriteDirect(topicName, partition, base+uint64(i), data); err != nil {
-			return fmt.Errorf("partial batch failure at index %d: %w", i, err)
-		}
+	if err := dh.WriteBatch(diskMsgs); err != nil {
+		return fmt.Errorf("atomic batch write failed: %w", err)
 	}
 
 	util.Debug("FSM persisted batch: topic=%s, count=%d", topicName, len(msgs))
@@ -278,7 +297,7 @@ func (f *BrokerFSM) GetPartitionMetadata(key string) *PartitionMetadata {
 	return nil
 }
 
-// todo.
+// todo. (issues #27)
 func (f *BrokerFSM) getCurrentRaftLeaderID() string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()

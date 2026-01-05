@@ -136,12 +136,12 @@ func TestDecodeBatchMessagesInvalidData(t *testing.T) {
 
 	t.Run("InvalidMessageCount", func(t *testing.T) {
 		data, _ := util.EncodeBatchMessages("topic", 0, "1", []types.Message{{Payload: "msg"}})
-
-		corrupted := make([]byte, len(data))
-		copy(corrupted, data)
+		corrupted := data[:10]
 
 		_, err := util.DecodeBatchMessages(corrupted[:10])
-		if err != nil {
+		if err == nil {
+			t.Error("Expected error for corrupted batch data (short length), but got nil")
+		} else {
 			util.Debug("Caught expected error for corrupted batch: %v", err)
 		}
 	})
@@ -181,7 +181,7 @@ func TestBatchMessagesEdgeCases(t *testing.T) {
 			t.Fatalf("Message count mismatch: got %d, want 1", len(batch.Messages))
 		}
 		if batch.Messages[0].Payload != largePayload {
-			t.Error("Large payload content integrity check failed: data corrupted during round-trip")
+			t.Errorf("Large payload content integrity check failed: got length %d, want %d", len(batch.Messages[0].Payload), len(largePayload))
 		}
 	})
 }

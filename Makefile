@@ -32,17 +32,32 @@ test:
 .PHONY: e2e
 e2e: e2e-build e2e-up
 	@echo "Running E2E tests..."
+	$(call run_e2e_test,$(GO) test -v -timeout 10m ./test/e2e/...)
+
+.PHONY: e2e-verbose
+e2e-verbose: e2e-build e2e-up
+	@echo "Running E2E tests (verbose)..."
+	$(call run_e2e_test,$(GO) test -v -race -timeout 10m ./test/e2e/...)
+
+.PHONY: e2e-coverage
+e2e-coverage: e2e-build e2e-up
+	@echo "Running E2E tests with coverage..."
+	$(call run_e2e_test,$(GO) test -v -timeout 10m -coverprofile=e2e-coverage.out ./test/e2e/...)
+	@echo "E2E coverage report saved to e2e-coverage.out"
+
+define run_e2e_test
 	@bash -c '\
 	set -e; \
-	$(GO) test -v -timeout 10m ./test/e2e/... || EXIT=$$?; \
+	$1 || EXIT=$$?; \
 	if [ -n "$$EXIT" ]; then \
-		echo "Tests failed, showing logs..."; \
+		echo "Tests failed with exit code $$EXIT, showing logs..."; \
 		$(MAKE) e2e-logs; \
 		$(MAKE) e2e-clean; \
 		exit $$EXIT; \
 	fi; \
 	$(MAKE) e2e-clean; \
 	'
+endef
 
 .PHONY: e2e-build
 e2e-build:
@@ -73,24 +88,13 @@ e2e-up:
 e2e-clean:
 	@echo "Cleaning E2E test environment..."
 	$(DOCKER_COMPOSE) -p $(COMPOSE_PROJECT) -f $(E2E_COMPOSE_FILE) down -v
-	-docker run --rm -v $(PWD)/test/logs:/logs alpine rm -rf /logs/* || true
+	-docker run --rm -v $(PWD)/test/logs:/logs alpine:3.20 rm -rf /logs/* || true
 
 .PHONY: e2e-logs
 e2e-logs:
 	@echo "Showing E2E test logs..."
 	@echo "=== Broker logs ==="
 	-docker logs $(BROKER_CONTAINER) 2>&1 || echo "Broker container not found"
-
-.PHONY: e2e-verbose
-e2e-verbose: e2e-build
-	@echo "Running E2E tests (verbose)..."
-	$(GO) test -v -race -timeout 10m ./test/e2e/...
-
-.PHONY: e2e-coverage
-e2e-coverage: e2e-build
-	@echo "Running E2E tests with coverage..."
-	$(GO) test -v -timeout 10m -coverprofile=e2e-coverage.out ./test/e2e/...
-	@echo "E2E coverage report saved to e2e-coverage.out"
 
 .PHONY: bench
 bench:

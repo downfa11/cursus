@@ -163,6 +163,12 @@ func PublishFailed() Expectation {
 		if ctx.lastError == nil && ctx.publishedCount > 0 {
 			return fmt.Errorf("expected publish to fail but it succeeded")
 		}
+
+		if ctx.publishedCount > 0 {
+			return fmt.Errorf("publish failed with error (%v), but %d messages were still recorded",
+				ctx.lastError, ctx.publishedCount)
+		}
+
 		ctx.GetT().Logf("Publish failed as expected with error: %v", ctx.lastError)
 		return nil
 	}
@@ -200,6 +206,17 @@ func PublishedSequencesAreUnique() Expectation {
 			seen[seq] = true
 		}
 		ctx.GetT().Logf("Verified: All %d published sequences are unique", len(ctx.publishedSeqNums))
+		return nil
+	}
+}
+
+// DuplicatesDetected verifies that the consumed count is higher than published due to lack of idempotency
+func DuplicatesDetected() Expectation {
+	return func(ctx *TestContext) error {
+		if ctx.consumedCount < ctx.publishedCount {
+			return fmt.Errorf("expected duplicate messages (consumed > %d), but got %d", ctx.publishedCount, ctx.consumedCount)
+		}
+		ctx.t.Logf("Duplicates detected as expected: Published %d, Consumed %d", ctx.publishedCount, ctx.consumedCount)
 		return nil
 	}
 }

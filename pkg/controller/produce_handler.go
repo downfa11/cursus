@@ -173,7 +173,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		if acks == "0" {
 			err = ch.TopicManager.Publish(topicName, msg)
 			if err != nil {
-				return ch.errorResponse(fmt.Sprintf("acks=0 publish failed: %v", err))
+				util.Error("acks=0 publish failed (stand-alone): %v", err)
 			}
 			return "OK"
 		}
@@ -193,7 +193,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 	}
 
 Respond:
-	if ch.Config.EnabledDistribution && ch.Cluster != nil {
+	if ch.Config.EnabledDistribution && ch.Cluster != nil && ch.Cluster.RaftManager != nil {
 		if leader := ch.Cluster.RaftManager.GetLeaderAddress(); leader != "" {
 			ackResp.Leader = leader
 		}
@@ -240,7 +240,7 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 					return resp, nil
 				}
 
-				util.Debug("Failed to forward BATCH to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
+				util.Debug("Failed to forward batch to leader. Retrying (Attempt %d/%d). Error: %v", i+1, maxRetries, forwardErr)
 
 				if i < maxRetries-1 {
 					time.Sleep(retryDelay)
@@ -317,7 +317,7 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 	}
 
 Respond:
-	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+	if ch.Config.EnabledDistribution && ch.Cluster != nil && ch.Cluster.RaftManager != nil {
 		if leader := ch.Cluster.RaftManager.GetLeaderAddress(); leader != "" {
 			respAck.Leader = leader
 		}

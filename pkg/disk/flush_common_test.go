@@ -34,7 +34,7 @@ func TestWriteDirectAndFlush(t *testing.T) {
 	defer dh.Close()
 
 	for i := 0; i < 3; i++ {
-		if err := dh.WriteDirect("testTopic", 0, uint64(i), "msg"+string(rune('A'+i))); err != nil {
+		if err := dh.AppendMessageSync("testTopic", 0, "msg"+string(rune('A'+i))); err != nil {
 			t.Fatalf("WriteDirect failed: %v", err)
 		}
 	}

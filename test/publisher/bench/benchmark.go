@@ -1,9 +1,11 @@
 package bench
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,6 +13,38 @@ import (
 )
 
 const sep = "========================================"
+
+type BenchmarkResult struct {
+	Timestamp      time.Time         `json:"timestamp"`
+	TotalTarget    int               `json:"total_target"`
+	SentMessages   int               `json:"sent_messages"`
+	FailedMessages int               `json:"failed_messages"`
+	SuccessRate    float64           `json:"success_rate"`
+	TotalDuration  float64           `json:"duration_seconds"`
+	MsgPerSec      float64           `json:"msg_per_sec"`
+	LatencyP95     float64           `json:"latency_p95_ms"`
+	LatencyP99     float64           `json:"latency_p99_ms"`
+	Errors         map[string]uint64 `json:"errors,omitempty"`
+}
+
+func CalculateLatencyPercentiles(latencies []time.Duration) (p95, p99 time.Duration) {
+	if len(latencies) == 0 {
+		return 0, 0
+	}
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+
+	p95Idx := int(float64(len(latencies)) * 0.95)
+	p99Idx := int(float64(len(latencies)) * 0.99)
+
+	if p95Idx >= len(latencies) {
+		p95Idx = len(latencies) - 1
+	}
+	if p99Idx >= len(latencies) {
+		p99Idx = len(latencies) - 1
+	}
+
+	return latencies[p95Idx], latencies[p99Idx]
+}
 
 type PartitionStat struct {
 	PartitionID int
@@ -33,7 +67,15 @@ func GenerateMessage(size int, seqNum int) string {
 	return header + padding
 }
 
-func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, sentMessages int, totalTarget int, totalDuration time.Duration, errSummary map[string]uint64) {
+func PrintBenchmarkSummaryFixedTo(
+	w io.Writer,
+	partitionStats []PartitionStat,
+	sentMessages int,
+	totalTarget int,
+	totalDuration time.Duration,
+	errSummary map[string]uint64,
+	allLatencies []time.Duration,
+) {
 	totalBatches := 0
 	for _, ps := range partitionStats {
 		totalBatches += ps.BatchCount
@@ -56,6 +98,8 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 		successRate = (float64(sentMessages) / float64(totalTarget)) * 100
 	}
 
+	p95, p99 := CalculateLatencyPercentiles(allLatencies)
+
 	fmt.Fprint(w, "\r\n")
 	fmt.Fprintln(w, sep)
 	fmt.Fprintln(w, "📊 PRODUCER BENCHMARK SUMMARY")
@@ -67,6 +111,8 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 	fmt.Fprintf(w, "%-28s : %.3fs\n", "Publish elapsed Time", totalDuration.Seconds())
 	fmt.Fprintf(w, "%-28s : %.2f batches/s\n", "Publish Batch Throughput", batchesPerSec)
 	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Publish Message Throughput", messagesPerSec)
+	fmt.Fprintf(w, "%-28s : %.2f ms\n", "Latency P95", float64(p95.Microseconds())/1000.0)
+	fmt.Fprintf(w, "%-28s : %.2f ms\n", "Latency P99", float64(p99.Microseconds())/1000.0)
 	fmt.Fprint(w, "\r\n")
 
 	fmt.Fprintln(w, "Partition Breakdown:")
@@ -82,9 +128,34 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 	}
 
 	fmt.Fprintln(w, sep)
+
+	result := BenchmarkResult{
+		Timestamp:      time.Now(),
+		TotalTarget:    totalTarget,
+		SentMessages:   sentMessages,
+		FailedMessages: totalTarget - sentMessages,
+		SuccessRate:    (float64(sentMessages) / float64(totalTarget)) * 100,
+		TotalDuration:  totalDuration.Seconds(),
+		MsgPerSec:      float64(sentMessages) / totalDuration.Seconds(),
+		LatencyP95:     float64(p95.Microseconds()) / 1000.0,
+		LatencyP99:     float64(p99.Microseconds()) / 1000.0,
+		Errors:         errSummary,
+	}
+	saveResultToJSON(result)
 }
 
-func PrintBenchmarkSummaryFixed(partitionStats []PartitionStat, sentMessages int, totalTarget int, totalDuration time.Duration, errSummary map[string]uint64) {
-	util.Info("🎉 Benchmark completed successfully!")
-	PrintBenchmarkSummaryFixedTo(os.Stdout, partitionStats, sentMessages, totalTarget, totalDuration, errSummary)
+func saveResultToJSON(res BenchmarkResult) {
+	data, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		util.Error("Failed to marshal benchmark result to JSON: %v", err)
+		return
+	}
+
+	filename := fmt.Sprintf("bench_%d.json", time.Now().Unix())
+	err = os.WriteFile(filename, data, 0644)
+	if err != nil {
+		util.Error("Failed to save benchmark JSON file '%s': %v", filename, err)
+		return
+	}
+	util.Info("✅ Benchmark result successfully saved to %s", filename)
 }

@@ -59,7 +59,7 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 		payload := map[string]interface{}{
 			"name":       topicName,
 			"partitions": partitions,
-			// todo. "leader_id": partition leader
+			// todo. (issues #27) "leader_id": partition leader
 		}
 
 		_, err := ch.applyAndWait("TOPIC", payload)
@@ -331,7 +331,8 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 	if ch.Coordinator != nil {
 		offset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
 		if !isFind {
-			return "ERROR: no offset found"
+			util.Debug("No offset found for group %s, returning default 0", groupName)
+			return "0"
 		}
 		return fmt.Sprintf("%d", offset)
 	} else {
@@ -561,7 +562,7 @@ func (ch *CommandHandler) resolveOffset(topicName string, partition int, request
 	if ch.Coordinator != nil {
 		savedOffset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
 		if isFind {
-			util.Debug("Found saved offset %d for group '%s'", savedOffset, groupName)
+			util.Debug("partition %d: found saved offset %d for topic %s group '%s'", partition, savedOffset, topicName, groupName)
 			return savedOffset, nil
 		}
 	}

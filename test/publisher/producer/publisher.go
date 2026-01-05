@@ -68,6 +68,7 @@ type Publisher struct {
 	bmMu         sync.Mutex
 	bmTotalTime  map[int]time.Duration
 	bmTotalCount map[int]int
+	bmLatencies  []time.Duration
 }
 
 func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
@@ -79,6 +80,7 @@ func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 		done:         make(chan struct{}),
 		bmTotalTime:  make(map[int]time.Duration),
 		bmTotalCount: make(map[int]int),
+		bmLatencies:  make([]time.Duration, 0, cfg.NumMessages/cfg.BatchSize),
 		inFlight:     make([]int32, cfg.Partitions),
 		gcTicker:     time.NewTicker(1 * time.Minute),
 	}
@@ -492,15 +494,23 @@ func (p *Publisher) markBatchAckedByID(part int, batchID string) {
 	p.partitionBatchMus[part].Unlock()
 
 	p.ackedCount.Add(uint64(state.EndSeqNum - state.StartSeqNum + 1))
-
-	sentTime := state.SentTime
 	p.producer.CommitSeqRange(part, state.EndSeqNum)
 
-	elapsed := time.Since(sentTime)
+	elapsed := time.Since(state.SentTime)
 	p.bmMu.Lock()
 	p.bmTotalCount[part] += 1
 	p.bmTotalTime[part] += elapsed
+	p.bmLatencies = append(p.bmLatencies, elapsed)
 	p.bmMu.Unlock()
+}
+
+func (p *Publisher) GetLatencies() []time.Duration {
+	p.bmMu.Lock()
+	defer p.bmMu.Unlock()
+
+	res := make([]time.Duration, len(p.bmLatencies))
+	copy(res, p.bmLatencies)
+	return res
 }
 
 func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {

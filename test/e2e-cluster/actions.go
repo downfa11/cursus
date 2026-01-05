@@ -108,7 +108,7 @@ func (a *ClusterActions) RecoverFollower() *ClusterActions {
 
 	cmd := exec.Command("docker", "start", "broker-2")
 	if err := cmd.Run(); err != nil {
-		a.ctx.GetT().Fatalf("Failed to recover follower): %v", err)
+		a.ctx.GetT().Fatalf("Failed to recover follower: %v", err)
 	}
 
 	healthAddrs := clusterHealthCheckAddrs(a.ctx.clusterSize)

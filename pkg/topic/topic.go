@@ -50,7 +50,7 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 		if err != nil {
 			return nil, fmt.Errorf("open handler for %s[%d]: %w", name, i, err)
 		}
-		partitions[i] = NewPartition(i, name, dh, sm)
+		partitions[i] = NewPartition(i, name, dh, sm, cfg)
 	}
 	return &Topic{
 		Name:           name,
@@ -62,14 +62,19 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 }
 
 // NewPartition creates a partition instance.
-func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager) *Partition {
+func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager, cfg *config.Config) *Partition {
+	bufSize := DefaultBufSize
+	if cfg != nil && cfg.BroadcastChannelBufferSize > 0 {
+		bufSize = cfg.BroadcastChannelBufferSize
+	}
+
 	p := &Partition{
 		id:            id,
 		topic:         topic,
 		dh:            dh,
 		streamManager: sm,
 		newMessageCh:  make(chan struct{}, 1),
-		broadcastCh:   make(chan types.Message, 10000),
+		broadcastCh:   make(chan types.Message, bufSize),
 	}
 	go p.runBroadcaster()
 	return p
@@ -102,7 +107,7 @@ func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 			util.Error("❌ failed to attach partition %d for topic '%s': %v\n", idx, t.Name, err)
 			return
 		}
-		newP := NewPartition(idx, t.Name, dh, t.streamManager)
+		newP := NewPartition(idx, t.Name, dh, t.streamManager, t.cfg)
 		t.Partitions = append(t.Partitions, newP)
 	}
 }

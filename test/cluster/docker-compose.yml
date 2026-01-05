@@ -91,9 +91,9 @@ services:
     container_name: broker-publisher  
     restart: on-failure:3
     depends_on:  
-      broker-1: { condition: service_healthy }
-      broker-2: { condition: service_healthy }
-      broker-3: { condition: service_healthy }
+      broker-1: {condition: service_healthy}
+      broker-2: {condition: service_healthy}
+      broker-3: {condition: service_healthy}
     volumes:  
       - ./publisher-config.yaml:/config.yaml:ro  
     command: ["./publisher", "-config", "/config.yaml"]  
@@ -107,10 +107,10 @@ services:
     container_name: broker-consumer  
     restart: on-failure:3
     depends_on:  
-      broker-1: { condition: service_healthy }
-      broker-2: { condition: service_healthy }
-      broker-3: { condition: service_healthy }
-      publisher: { condition: service_started }
+      broker-1: {condition: service_healthy}
+      broker-2: {condition: service_healthy}
+      broker-3: {condition: service_healthy}
+      publisher: {condition: service_started}
     volumes:  
       - ./consumer-config.yaml:/config.yaml:ro  
     command: ["./consumer", "-config", "/config.yaml"]  
@@ -127,9 +127,9 @@ services:
     networks:  
       - cluster_network  
     depends_on:  
-      broker-1: { condition: service_healthy }
-      broker-2: { condition: service_healthy }
-      broker-3: { condition: service_healthy }
+      broker-1: {condition: service_healthy}
+      broker-2: {condition: service_healthy}
+      broker-3: {condition: service_healthy}
 
 networks:
   cluster_network:
