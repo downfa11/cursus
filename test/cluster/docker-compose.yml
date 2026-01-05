@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: broker-1
     command: ./broker
+    restart: on-failure:3
     environment:
       - CONFIG_PATH=/root/config.yaml
       - ADVERTISED_HOST=broker-1
@@ -31,11 +32,14 @@ services:
       dockerfile: Dockerfile
     container_name: broker-2
     command: ./broker
+    restart: on-failure:3
     environment:
       - CONFIG_PATH=/root/config.yaml
       - ADVERTISED_HOST=broker-2
       - BOOTSTRAP_CLUSTER=false
-      - RAFT_PEERS=
+    depends_on:
+      broker-1:
+        condition: service_healthy
     volumes:
       - ./config.yaml:/root/config.yaml:ro
     ports:
@@ -57,11 +61,14 @@ services:
       dockerfile: Dockerfile
     container_name: broker-3
     command: ./broker
+    restart: on-failure:3
     environment:
       - CONFIG_PATH=/root/config.yaml
       - ADVERTISED_HOST=broker-3
       - BOOTSTRAP_CLUSTER=false
-      - RAFT_PEERS=
+    depends_on:
+      broker-1:
+        condition: service_healthy
     volumes:
       - ./config.yaml:/root/config.yaml:ro
     ports:
@@ -76,45 +83,40 @@ services:
       retries: 3
     networks:
       - cluster_network
-  
+
   publisher:  
     build:  
       context: ../publisher  
       dockerfile: Dockerfile  
     container_name: broker-publisher  
+    restart: on-failure:3
     depends_on:  
-      broker-1:  
-        condition: service_healthy  
-      broker-2:  
-        condition: service_healthy  
-      broker-3:  
-        condition: service_healthy  
+      broker-1: { condition: service_healthy }
+      broker-2: { condition: service_healthy }
+      broker-3: { condition: service_healthy }
     volumes:  
       - ./publisher-config.yaml:/config.yaml:ro  
     command: ["./publisher", "-config", "/config.yaml"]  
     networks:  
       - cluster_network 
-  
+
   consumer:  
     build:  
       context: ../consumer  
       dockerfile: Dockerfile  
     container_name: broker-consumer  
+    restart: on-failure:3
     depends_on:  
-      broker-1:  
-        condition: service_healthy  
-      broker-2:  
-        condition: service_healthy  
-      broker-3:  
-        condition: service_healthy  
-      publisher:  
-        condition: service_started  
+      broker-1: { condition: service_healthy }
+      broker-2: { condition: service_healthy }
+      broker-3: { condition: service_healthy }
+      publisher: { condition: service_started }
     volumes:  
       - ./consumer-config.yaml:/config.yaml:ro  
     command: ["./consumer", "-config", "/config.yaml"]  
     networks:  
       - cluster_network  
-  
+
   prometheus:  
     image: prom/prometheus:latest  
     container_name: prometheus  
@@ -125,10 +127,10 @@ services:
     networks:  
       - cluster_network  
     depends_on:  
-      - broker-1  
-      - broker-2  
-      - broker-3  
-  
+      broker-1: { condition: service_healthy }
+      broker-2: { condition: service_healthy }
+      broker-3: { condition: service_healthy }
+
 networks:
   cluster_network:
     name: cluster_network
