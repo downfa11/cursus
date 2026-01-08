@@ -118,6 +118,9 @@ func (c *Consumer) validateCommitConn() bool {
 
 	if err := c.commitConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond)); err != nil {
 		util.Debug("failed to set read deadline: %v", err)
+		c.commitConn.Close()
+		c.commitConn = nil
+		return false
 	}
 
 	_, err := c.commitConn.Read(make([]byte, 0))

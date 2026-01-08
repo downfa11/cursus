@@ -132,6 +132,17 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		return
 	}
 
+	idleTimeout := time.Duration(pc.consumer.config.StreamingReadDeadlineMS) * time.Millisecond
+	if idleTimeout == 0 {
+		idleTimeout = 5 * time.Second
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+		util.Error("Partition [%d] failed to set read deadline: %v", pc.partitionID, err)
+		pc.closeConnection()
+		return
+	}
+
 	batchData, err := util.ReadWithLength(conn)
 	if err != nil {
 		util.Error("Partition [%d] read batch error: %v", pc.partitionID, err)
@@ -235,7 +246,12 @@ func (pc *PartitionConsumer) startStreamLoop() {
 				break
 			}
 
-			_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
+			if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+				util.Error("Partition [%d] failed to set read deadline: %v", pid, err)
+				pc.closeConnection()
+				break
+			}
+
 			batchData, err := util.ReadWithLength(conn)
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {

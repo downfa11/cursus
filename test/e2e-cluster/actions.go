@@ -90,6 +90,10 @@ func (a *ClusterActions) Then() *e2e.Consequences {
 }
 
 func (a *ClusterActions) SimulateFollowerFailure(nodeIndex int) *ClusterActions {
+	if nodeIndex <= 0 || nodeIndex > a.ctx.clusterSize {
+		a.ctx.GetT().Fatalf("Invalid nodeIndex %d for failure simulation: cluster size is %d", nodeIndex, a.ctx.clusterSize)
+	}
+
 	containerName := fmt.Sprintf("broker-%d", nodeIndex)
 	a.ctx.GetT().Log("Simulating follower failure")
 

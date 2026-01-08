@@ -631,8 +631,6 @@ func isTopicMatched(pattern, topicName string) bool {
 }
 
 func match(p, t string) bool {
-	var re *regexp.Regexp
-
 	if val, ok := regexCache.Load(p); ok {
 		if cachedRe, ok := val.(*regexp.Regexp); ok {
 			return cachedRe.MatchString(t)
@@ -650,5 +648,5 @@ func match(p, t string) bool {
 	}
 
 	regexCache.Store(p, newRe)
-	return re.MatchString(t)
+	return newRe.MatchString(t)
 }
