@@ -235,7 +235,7 @@ func (pc *PartitionConsumer) startStreamLoop() {
 				break
 			}
 
-			conn.SetReadDeadline(time.Now().Add(idleTimeout))
+			_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
 			batchData, err := util.ReadWithLength(conn)
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {

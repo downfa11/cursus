@@ -634,19 +634,21 @@ func match(p, t string) bool {
 	var re *regexp.Regexp
 
 	if val, ok := regexCache.Load(p); ok {
-		re = val.(*regexp.Regexp)
-	} else {
-		escaped := regexp.QuoteMeta(p)
-		regexPattern := strings.ReplaceAll(escaped, `\*`, ".*")
-		regexPattern = strings.ReplaceAll(regexPattern, `\?`, ".")
-
-		var err error
-		re, err = regexp.Compile("^" + regexPattern + "$")
-		if err != nil {
-			return false
+		if cachedRe, ok := val.(*regexp.Regexp); ok {
+			return cachedRe.MatchString(t)
 		}
-		regexCache.Store(p, re)
 	}
 
+	escaped := regexp.QuoteMeta(p)
+	regexPattern := strings.ReplaceAll(escaped, `\*`, ".*")
+	regexPattern = strings.ReplaceAll(regexPattern, `\?`, ".")
+
+	newRe, err := regexp.Compile("^" + regexPattern + "$")
+	if err != nil {
+		util.Error("Regex compile error for pattern %s: %v", p, err)
+		return false
+	}
+
+	regexCache.Store(p, newRe)
 	return re.MatchString(t)
 }

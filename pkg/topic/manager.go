@@ -176,9 +176,7 @@ func (tm *TopicManager) executeBatch(t *Topic, partitioned map[int][]types.Messa
 
 	var lastErr error
 	for err := range errCh {
-		if lastErr == nil {
-			lastErr = err
-		}
+		lastErr = err
 		util.Error("Batch error: %v", err)
 	}
 	return lastErr

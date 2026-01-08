@@ -100,8 +100,12 @@ func (c *Consumer) getLeaderConn() (net.Conn, error) {
 	}
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+		if err := tcpConn.SetKeepAlive(true); err != nil {
+			util.Error("failed to set keep alive: %v", err)
+		}
+		if err := tcpConn.SetKeepAlivePeriod(30 * time.Second); err != nil {
+			util.Error("failed to set keep alive period: %v", err)
+		}
 	}
 
 	return conn, nil
@@ -112,14 +116,18 @@ func (c *Consumer) validateCommitConn() bool {
 		return false
 	}
 
-	c.commitConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+	if err := c.commitConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond)); err != nil {
+		util.Debug("failed to set read deadline: %v", err)
+	}
+
 	_, err := c.commitConn.Read(make([]byte, 0))
 	if err != nil && !os.IsTimeout(err) {
 		c.commitConn.Close()
 		c.commitConn = nil
 		return false
 	}
-	c.commitConn.SetReadDeadline(time.Time{})
+
+	_ = c.commitConn.SetReadDeadline(time.Time{})
 	return true
 }
 
@@ -389,7 +397,7 @@ func (c *Consumer) heartbeatLoop() {
 				c.hbMu.Unlock()
 			}
 
-			conn.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 			hb := fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s generation=%d", c.config.Topic, c.config.GroupID, c.memberID, c.generation)
 			if err := util.WriteWithLength(conn, util.EncodeMessage("", hb)); err != nil {
 				util.Error("heartbeat send failed: %v", err)
@@ -398,7 +406,7 @@ func (c *Consumer) heartbeatLoop() {
 			}
 
 			resp, err := util.ReadWithLength(conn)
-			conn.SetDeadline(time.Time{})
+			_ = conn.SetDeadline(time.Time{})
 
 			if err != nil {
 				util.Error("heartbeat response failed: %v", err)
@@ -632,7 +640,9 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 		parts := strings.Fields(respStr)
 		for _, part := range parts {
 			if strings.HasPrefix(part, "generation=") {
-				fmt.Sscanf(part, "generation=%d", &gen)
+				if n, err := fmt.Sscanf(part, "generation=%d", &gen); err != nil || n != 1 {
+					util.Debug("failed to parse generation from %s: %v", part, err)
+				}
 			} else if strings.HasPrefix(part, "member=") {
 				mid = strings.TrimPrefix(part, "member=")
 			}
@@ -722,7 +732,7 @@ func (c *Consumer) fetchOffset(partition int) (uint64, error) {
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	fetchCmd := fmt.Sprintf("FETCH_OFFSET topic=%s partition=%d group=%s", c.config.Topic, partition, c.config.GroupID)
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", fetchCmd)); err != nil {
 		return 0, fmt.Errorf("fetch offset send failed: %v", err)

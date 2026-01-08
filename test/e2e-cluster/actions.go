@@ -107,7 +107,6 @@ func (a *ClusterActions) SimulateFollowerFailure(nodeIndex int) *ClusterActions 
 func (a *ClusterActions) RecoverFollower(nodeIndex int) *ClusterActions {
 	if nodeIndex <= 0 || nodeIndex > a.ctx.clusterSize {
 		a.ctx.GetT().Fatalf("Invalid nodeIndex %d: cluster size is %d", nodeIndex, a.ctx.clusterSize)
-		return a
 	}
 
 	containerName := fmt.Sprintf("broker-%d", nodeIndex)
@@ -122,6 +121,5 @@ func (a *ClusterActions) RecoverFollower(nodeIndex int) *ClusterActions {
 	if err := a.waitForNodeHealth(nodeIndex, healthAddrs[nodeIndex-1]); err != nil {
 		a.ctx.GetT().Fatalf("node health check failed: %v", err)
 	}
-
 	return a
 }
