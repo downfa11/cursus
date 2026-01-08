@@ -48,14 +48,15 @@ func CalculateLatencyPercentiles(latencies []time.Duration) (p95, p99 time.Durat
 		return sorted[i] < sorted[j]
 	})
 
-	p95Idx := int(float64(len(sorted)) * 0.95)
-	p99Idx := int(float64(len(sorted)) * 0.99)
+	n := len(sorted)
+	p95Idx := int(float64(n) * 0.95)
+	p99Idx := int(float64(n) * 0.99)
 
-	if p95Idx >= len(latencies) {
-		p95Idx = len(latencies) - 1
+	if p95Idx >= n {
+		p95Idx = n - 1
 	}
-	if p99Idx >= len(latencies) {
-		p99Idx = len(latencies) - 1
+	if p99Idx >= n {
+		p99Idx = n - 1
 	}
 
 	return sorted[p95Idx], sorted[p99Idx]

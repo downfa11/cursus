@@ -178,6 +178,7 @@ func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Mess
 	diskMsg := types.DiskMessage{
 		Topic:      topic,
 		Partition:  int32(partition),
+		Offset:     offset,
 		ProducerID: msg.ProducerID,
 		SeqNum:     msg.SeqNum,
 		Epoch:      msg.Epoch,

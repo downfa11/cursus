@@ -32,12 +32,15 @@ func TestDiskHandlerBasic(t *testing.T) {
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
 	for i, payload := range messages {
-		_, err := dh.AppendMessage(topic, 0, &types.Message{
+		offset, err := dh.AppendMessage(topic, 0, &types.Message{
 			Payload: payload,
 			SeqNum:  uint64(i + 1),
 		})
 		if err != nil {
 			t.Fatalf("failed to append message %d: %v", i, err)
+		}
+		if offset != uint64(i) {
+			t.Errorf("AppendMessage %d: expected returned offset %d, got %d", i, i, offset)
 		}
 	}
 
@@ -95,11 +98,26 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	}
 	defer dh.Close()
 
-	if _, err := dh.AppendMessage(topic, 0, &types.Message{Payload: "first", SeqNum: 10}); err != nil {
+	off1, err := dh.AppendMessage(topic, 0, &types.Message{
+		Payload: "first",
+		SeqNum:  10,
+	})
+	if err != nil {
 		t.Fatalf("failed to append first message: %v", err)
 	}
-	if _, err := dh.AppendMessage(topic, 0, &types.Message{Payload: "second", SeqNum: 20}); err != nil {
+	if off1 != 0 {
+		t.Errorf("expected offset 0, got %d", off1)
+	}
+
+	off2, err := dh.AppendMessage(topic, 0, &types.Message{
+		Payload: "second",
+		SeqNum:  20,
+	})
+	if err != nil {
 		t.Fatalf("failed to append second message: %v", err)
+	}
+	if off2 != 1 {
+		t.Errorf("expected offset 1, got %d", off2)
 	}
 
 	time.Sleep(50 * time.Millisecond)
@@ -165,12 +183,15 @@ func TestDiskHandlerRotation(t *testing.T) {
 
 	msgs := []string{"12345", "67890", "abcde"}
 	for i, m := range msgs {
-		_, err := dh.AppendMessage(topic, 0, &types.Message{
+		offset, err := dh.AppendMessage(topic, 0, &types.Message{
 			Payload: m,
 			SeqNum:  uint64(100 + i),
 		})
 		if err != nil {
 			t.Fatalf("failed to append message %d during rotation test: %v", i, err)
+		}
+		if offset != uint64(i) {
+			t.Errorf("AppendMessage %d (rotation): expected offset %d, got %d", i, i, offset)
 		}
 	}
 
