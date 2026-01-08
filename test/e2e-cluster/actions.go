@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/downfa11-org/go-broker/test/e2e"
+	"github.com/downfa11-org/cursus/test/e2e"
 )
 
 // ClusterActions represents cluster-specific test actions
@@ -99,12 +99,17 @@ func (a *ClusterActions) SimulateFollowerFailure(nodeIndex int) *ClusterActions 
 		return a
 	}
 
-	a.ctx.GetT().Log("Successfully stopped broker-2")
+	a.ctx.GetT().Logf("Successfully stopped %s", containerName)
 	time.Sleep(2 * time.Second)
 	return a
 }
 
 func (a *ClusterActions) RecoverFollower(nodeIndex int) *ClusterActions {
+	if nodeIndex <= 0 || nodeIndex > a.ctx.clusterSize {
+		a.ctx.GetT().Fatalf("Invalid nodeIndex %d: cluster size is %d", nodeIndex, a.ctx.clusterSize)
+		return a
+	}
+
 	containerName := fmt.Sprintf("broker-%d", nodeIndex)
 	a.ctx.GetT().Log("Recovering follower")
 

@@ -43,12 +43,13 @@ func CalculateLatencyPercentiles(latencies []time.Duration) (p95, p99 time.Durat
 
 	sorted := make([]time.Duration, len(latencies))
 	copy(sorted, latencies)
+
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i] < sorted[j]
 	})
 
-	p95Idx := int(float64(len(latencies)) * 0.95)
-	p99Idx := int(float64(len(latencies)) * 0.99)
+	p95Idx := int(float64(len(sorted)) * 0.95)
+	p99Idx := int(float64(len(sorted)) * 0.99)
 
 	if p95Idx >= len(latencies) {
 		p95Idx = len(latencies) - 1
@@ -57,7 +58,7 @@ func CalculateLatencyPercentiles(latencies []time.Duration) (p95, p99 time.Durat
 		p99Idx = len(latencies) - 1
 	}
 
-	return latencies[p95Idx], latencies[p99Idx]
+	return sorted[p95Idx], sorted[p99Idx]
 }
 
 func GenerateMessage(size int, seqNum int) string {

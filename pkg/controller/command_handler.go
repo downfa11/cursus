@@ -8,11 +8,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/coordinator"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/coordinator"
+	"github.com/downfa11-org/cursus/util"
 )
+
+// todo. consider an LRU cache(match) to prevent potential memory bloat.
+var regexCache sync.Map
 
 // handleHelp processes HELP command
 func (ch *CommandHandler) handleHelp() string {
@@ -623,16 +627,26 @@ func isTopicMatched(pattern, topicName string) bool {
 	if strings.Contains(pattern, "*") || strings.Contains(pattern, "?") {
 		return match(pattern, topicName)
 	}
-	if strings.Contains(topicName, "*") || strings.Contains(topicName, "?") {
-		return match(topicName, pattern)
-	}
 	return false
 }
 
 func match(p, t string) bool {
-	escaped := regexp.QuoteMeta(p)
-	regexPattern := strings.ReplaceAll(escaped, `\*`, ".*")
-	regexPattern = strings.ReplaceAll(regexPattern, `\?`, ".")
-	matched, _ := regexp.MatchString("^"+regexPattern+"$", t)
-	return matched
+	var re *regexp.Regexp
+
+	if val, ok := regexCache.Load(p); ok {
+		re = val.(*regexp.Regexp)
+	} else {
+		escaped := regexp.QuoteMeta(p)
+		regexPattern := strings.ReplaceAll(escaped, `\*`, ".*")
+		regexPattern = strings.ReplaceAll(regexPattern, `\?`, ".")
+
+		var err error
+		re, err = regexp.Compile("^" + regexPattern + "$")
+		if err != nil {
+			return false
+		}
+		regexCache.Store(p, re)
+	}
+
+	return re.MatchString(t)
 }

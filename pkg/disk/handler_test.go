@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/types"
 )
 
 // TestDiskHandlerBasic verifies basic append and flush behavior
@@ -32,10 +32,13 @@ func TestDiskHandlerBasic(t *testing.T) {
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
 	for i, payload := range messages {
-		dh.AppendMessage(topic, 0, &types.Message{
+		_, err := dh.AppendMessage(topic, 0, &types.Message{
 			Payload: payload,
 			SeqNum:  uint64(i + 1),
 		})
+		if err != nil {
+			t.Fatalf("failed to append message %d: %v", i, err)
+		}
 	}
 
 	time.Sleep(150 * time.Millisecond)
@@ -92,8 +95,12 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	}
 	defer dh.Close()
 
-	dh.AppendMessage(topic, 0, &types.Message{Payload: "first", SeqNum: 10})
-	dh.AppendMessage(topic, 0, &types.Message{Payload: "second", SeqNum: 20})
+	if _, err := dh.AppendMessage(topic, 0, &types.Message{Payload: "first", SeqNum: 10}); err != nil {
+		t.Fatalf("failed to append first message: %v", err)
+	}
+	if _, err := dh.AppendMessage(topic, 0, &types.Message{Payload: "second", SeqNum: 20}); err != nil {
+		t.Fatalf("failed to append second message: %v", err)
+	}
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -158,10 +165,13 @@ func TestDiskHandlerRotation(t *testing.T) {
 
 	msgs := []string{"12345", "67890", "abcde"}
 	for i, m := range msgs {
-		dh.AppendMessage(topic, 0, &types.Message{
+		_, err := dh.AppendMessage(topic, 0, &types.Message{
 			Payload: m,
 			SeqNum:  uint64(100 + i),
 		})
+		if err != nil {
+			t.Fatalf("failed to append message %d during rotation test: %v", i, err)
+		}
 	}
 
 	time.Sleep(50 * time.Millisecond)
