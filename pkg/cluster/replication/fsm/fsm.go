@@ -167,7 +167,7 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 	case 1:
 		util.Info("FSM Restore: Validating snapshot Version 1")
 	default:
-		return fmt.Errorf("unknown snapshot version: %d.", state.Version)
+		return fmt.Errorf("unknown snapshot version: %d", state.Version)
 	}
 
 	f.mu.Lock()

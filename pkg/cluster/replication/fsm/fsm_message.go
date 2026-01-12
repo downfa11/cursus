@@ -39,7 +39,7 @@ func parseMessageCommand(jsonData string) (*MessageCommand, error) {
 		var ok bool
 		messages, ok = raw["Messages"].([]interface{})
 		if !ok {
-			return nil, fmt.Errorf("Messages must be array")
+			return nil, fmt.Errorf("messages must be array")
 		}
 	} else {
 		messages = []interface{}{raw}

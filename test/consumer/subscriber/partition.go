@@ -241,11 +241,7 @@ func (pc *PartitionConsumer) startStreamLoop() {
 		}
 
 		idleTimeout := time.Duration(c.config.StreamingReadDeadlineMS) * time.Millisecond
-		for {
-			if atomic.LoadInt32(&c.rebalancing) == 1 {
-				break
-			}
-
+		for atomic.LoadInt32(&c.rebalancing) != 1 {
 			if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
 				util.Error("Partition [%d] failed to set read deadline: %v", pid, err)
 				pc.closeConnection()

@@ -16,7 +16,7 @@ type ClusterActions struct {
 }
 
 func (c *ClusterTestContext) WhenCluster() *ClusterActions {
-	base := c.TestContext.When()
+	base := c.When()
 	return &ClusterActions{
 		ctx:     c,
 		actions: base,
