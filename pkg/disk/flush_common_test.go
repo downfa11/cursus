@@ -2,7 +2,6 @@ package disk_test
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -22,7 +21,7 @@ func setupDiskHandler(t *testing.T) *disk.DiskHandler {
 		SegmentSize:        1024,
 	}
 
-	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0, cfg.SegmentSize)
+	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {
 		t.Fatalf("failed to create DiskHandler: %v", err)
 	}
@@ -54,7 +53,7 @@ func TestWriteDirectAndFlush(t *testing.T) {
 		t.Fatalf("expected AbsoluteOffset 3, got %d", dh.GetAbsoluteOffset())
 	}
 
-	filePath := filepath.Join(dh.BaseName + "_segment_0.log")
+	filePath := dh.GetSegmentPath(0)
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		t.Fatalf("expected segment file to exist at %s", filePath)
 	}
@@ -186,7 +185,7 @@ func TestDrainAndShutdown(t *testing.T) {
 		SegmentSize:        1024,
 	}
 
-	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0, cfg.SegmentSize)
+	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {
 		t.Fatalf("failed to create DiskHandler: %v", err)
 	}
@@ -207,7 +206,7 @@ func TestDrainAndShutdown(t *testing.T) {
 
 	dh.Close()
 
-	newDh, err := disk.NewDiskHandler(cfg, "testTopic", 0, cfg.SegmentSize)
+	newDh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {
 		t.Fatalf("failed to reopen DiskHandler: %v", err)
 	}

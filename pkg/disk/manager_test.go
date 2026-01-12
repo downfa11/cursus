@@ -1,9 +1,7 @@
 package disk_test
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/downfa11-org/cursus/pkg/config"
@@ -78,8 +76,8 @@ func TestDiskManager_CloseAllHandlers(t *testing.T) {
 
 	dm.CloseAllHandlers()
 
-	for i, topic := range topics {
-		filePath := filepath.Join(tmpDir, topic, fmt.Sprintf("partition_%d_segment_0.log", i))
+	for i := range topics {
+		filePath := handlers[i].GetSegmentPath(0)
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			t.Fatalf("expected segment file %s to exist", filePath)
 		}

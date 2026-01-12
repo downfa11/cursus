@@ -3,6 +3,7 @@ package disk
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/downfa11-org/cursus/pkg/types"
@@ -48,11 +49,10 @@ func (d *DiskHandler) flushLoop() {
 				batch = batch[:0]
 			}
 		case <-d.getSegmentTickerChan(segmentTicker):
-			// Time-based segment rotation
 			d.mu.Lock()
 			d.ioMu.Lock()
 			if time.Since(d.segmentCreatedAt) >= d.segmentRollTime {
-				if err := d.rotateSegment(); err != nil {
+				if err := d.rotateSegment(d.AbsoluteOffset); err != nil {
 					util.Error("time-based segment rotation failed: %v", err)
 				}
 			}
@@ -60,7 +60,6 @@ func (d *DiskHandler) flushLoop() {
 			d.mu.Unlock()
 
 		case <-d.done:
-			// Gracefully drain all pending writes before shutdown
 			d.drainAndShutdown(batch)
 			return
 		}
@@ -94,19 +93,21 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 	d.ioMu.Lock()
 	defer d.ioMu.Unlock()
 
-	if d.file == nil {
-		if err := d.openSegment(); err != nil {
-			return fmt.Errorf("open segment failed: %w", err)
-		}
-	}
-
 	if len(batch) == 0 {
 		return nil
 	}
 
+	if d.file == nil {
+		if err := d.openSegment(); err != nil {
+			return fmt.Errorf("open segment failed: %w", err)
+		}
+		if err := d.openIndexFiles(); err != nil {
+			return err
+		}
+	}
+
 	serializedMsgs := make([][]byte, 0, len(batch))
 	totalSize := 0
-
 	for i, msg := range batch {
 		serialized, err := util.SerializeDiskMessage(msg)
 		if err != nil {
@@ -129,9 +130,9 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 		buffer = append(buffer, serialized...)
 	}
 
-	if d.CurrentOffset+uint64(len(buffer)) > d.SegmentSize {
-		if err := d.rotateSegment(); err != nil {
-			return fmt.Errorf("rotateSegment failed: %w", err)
+	if d.CurrentOffset+uint64(totalSize) > d.SegmentSize {
+		if err := d.rotateSegment(batch[0].Offset); err != nil {
+			return err
 		}
 	}
 
@@ -141,6 +142,34 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 
 	if err := d.writer.Flush(); err != nil {
 		return fmt.Errorf("flush failed after batch: %w", err)
+	}
+
+	accumulatedLen := uint64(0)
+	for i, msg := range batch {
+		msgPosition := d.CurrentOffset + accumulatedLen
+		if msgPosition-d.lastIndexPosition >= d.indexInterval {
+			if d.indexWriter != nil {
+				entry := types.IndexEntry{
+					Offset:   msg.Offset,
+					Position: msgPosition,
+				}
+				if err := binary.Write(d.indexWriter, binary.BigEndian, entry); err == nil {
+					d.lastIndexPosition = msgPosition
+				}
+			}
+		}
+		accumulatedLen += uint64(4 + len(serializedMsgs[i]))
+	}
+
+	if d.indexWriter != nil {
+		if err := d.indexWriter.Flush(); err != nil {
+			return fmt.Errorf("flush index writer failed: %w", err)
+		}
+		if d.indexFile != nil {
+			if err := d.indexFile.Sync(); err != nil {
+				return fmt.Errorf("sync index file failed: %w", err)
+			}
+		}
 	}
 
 	d.CurrentOffset += uint64(len(buffer))
@@ -177,7 +206,7 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 	totalLen := uint64(4 + len(serialized))
 
 	if d.CurrentOffset+totalLen > d.SegmentSize {
-		if err := d.rotateSegment(); err != nil {
+		if err := d.rotateSegment(msg.Offset); err != nil {
 			return fmt.Errorf("rotateSegment failed: %w", err)
 		}
 	}
@@ -193,13 +222,43 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 		return fmt.Errorf("flush failed: %w", err)
 	}
 
+	msgPosition := d.CurrentOffset
+	if msgPosition-d.lastIndexPosition >= d.indexInterval {
+		indexEntry := types.IndexEntry{
+			Offset:   msg.Offset,
+			Position: msgPosition,
+		}
+		if d.indexWriter != nil {
+			if err := binary.Write(d.indexWriter, binary.BigEndian, indexEntry); err != nil {
+				util.Error("failed to write index entry: %v", err)
+			}
+			if err := d.indexWriter.Flush(); err != nil {
+				util.Error("failed to flush index writer: %v", err)
+			}
+			d.lastIndexPosition = msgPosition
+		}
+	}
+
+	if d.indexFile != nil {
+		if err := d.indexFile.Sync(); err != nil {
+			util.Error("failed to sync index file: %v", err)
+		}
+	}
+
 	d.CurrentOffset += totalLen
 	return nil
 }
 
 // rotateSegment closes the current segment and opens a new one.
-func (d *DiskHandler) rotateSegment() error {
+func (d *DiskHandler) rotateSegment(nextBaseOffset uint64) error {
+	if nextBaseOffset <= d.CurrentSegment && d.CurrentOffset == 0 {
+		return nil
+	}
+
 	var errs []error
+	oldSegmentID := d.CurrentSegment
+	oldLogPath := d.GetSegmentPath(oldSegmentID)
+	oldIndexPath := d.GetIndexPath(oldSegmentID)
 
 	if d.writer != nil {
 		if err := d.writer.Flush(); err != nil {
@@ -209,20 +268,51 @@ func (d *DiskHandler) rotateSegment() error {
 	}
 
 	if d.file != nil {
+		if err := d.file.Sync(); err != nil {
+			util.Error("failed to sync disk file: %v", err)
+		}
 		if err := d.file.Close(); err != nil {
 			util.Error("close failed during rotation: %v", err)
 			errs = append(errs, err)
 		}
+		d.file = nil
 	}
 
-	d.CurrentSegment++
+	d.indexMu.Lock()
+	if err := d.closeIndexFiles(); err != nil {
+		util.Error("close index files failed during rotation: %v", err)
+		errs = append(errs, err)
+	}
+	d.indexMu.Unlock()
+
+	if len(errs) == 0 {
+		if _, err := os.Stat(oldLogPath); err == nil {
+			if err := os.Chmod(oldLogPath, 0444); err != nil {
+				util.Error("failed to set read-only permission: %v", err)
+			}
+		}
+
+		if _, err := os.Stat(oldIndexPath); err == nil {
+			if err := os.Chmod(oldIndexPath, 0444); err != nil {
+				util.Error("failed to set read-only permission: %v", err)
+			}
+		}
+		util.Debug("Segment %d closed and secured (read-only)", d.CurrentSegment)
+	}
+
+	d.CurrentSegment = nextBaseOffset
 	d.CurrentOffset = 0
+	d.lastIndexPosition = 0
 	d.segmentCreatedAt = time.Now()
 
 	if err := d.openSegment(); err != nil {
+		util.Error("Failed to open new segment: %v", err)
+		return err
+	}
+	if err := d.openIndexFiles(); err != nil {
+		util.Error("open index files failed during rotation: %v", err)
 		errs = append(errs, err)
 	}
-
 	if len(errs) > 0 {
 		return fmt.Errorf("rotateSegment errors: %v", errs)
 	}
@@ -275,7 +365,7 @@ func (d *DiskHandler) GetAbsoluteOffset() uint64 {
 }
 
 // GetCurrentSegment returns the current segment number in a thread-safe manner
-func (d *DiskHandler) GetCurrentSegment() int {
+func (d *DiskHandler) GetCurrentSegment() uint64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.CurrentSegment
@@ -331,6 +421,10 @@ func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
 			util.Error("file close failed: %v", err)
 		}
 		d.file = nil
+	}
+
+	if err := d.closeIndexFiles(); err != nil {
+		util.Error("close index files failed during shutdown: %v", err)
 	}
 }
 

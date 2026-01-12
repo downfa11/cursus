@@ -22,9 +22,7 @@ func TestDiskHandlerBasic(t *testing.T) {
 	}
 
 	topic := "testlog"
-	segmentSize := 1024
-
-	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0)
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}
@@ -90,9 +88,7 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	}
 
 	topic := "overflowlog"
-	segmentSize := 1024
-
-	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0)
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}
@@ -170,12 +166,11 @@ func TestDiskHandlerRotation(t *testing.T) {
 		ChannelBufferSize:  10,
 		DiskWriteTimeoutMS: 100,
 		LogDir:             dir,
+		SegmentSize:        20,
 	}
 
 	topic := "rotationlog"
-	segmentSize := 10
-
-	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0)
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}

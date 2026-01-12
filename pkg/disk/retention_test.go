@@ -1,0 +1,82 @@
+package disk_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestDiskHandler_EnforceRetention(t *testing.T) {
+	createSegment := func(t *testing.T, dh *disk.DiskHandler, segNum int, size int, modTime time.Time) {
+		logPath := dh.GetSegmentPath(uint64(segNum))
+		indexPath := dh.GetIndexPath(uint64(segNum))
+
+		require.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0755))
+		require.NoError(t, os.WriteFile(logPath, make([]byte, size), 0644))
+		require.NoError(t, os.Chtimes(logPath, modTime, modTime))
+		require.NoError(t, os.WriteFile(indexPath, []byte("index_data"), 0644))
+	}
+
+	tests := []struct {
+		name           string
+		cfg            *config.Config
+		setup          func(t *testing.T, dh *disk.DiskHandler)
+		expectedDelete []int
+		expectedKeep   []int
+	}{
+		{
+			name: "RetentionBytes_OldSegmentsDeleted",
+			cfg: &config.Config{
+				RetentionBytes: 300,
+				RetentionHours: 0,
+			},
+			setup: func(t *testing.T, dh *disk.DiskHandler) {
+				for i := 0; i < 5; i++ {
+					createSegment(t, dh, i, 100, time.Now())
+				}
+			},
+			expectedDelete: []int{0, 1},
+			expectedKeep:   []int{2, 3, 4},
+		},
+		{
+			name: "RetentionHours_ExpiredSegmentsDeleted",
+			cfg: &config.Config{
+				RetentionBytes: 0,
+				RetentionHours: 24,
+			},
+			setup: func(t *testing.T, dh *disk.DiskHandler) {
+				oldTime := time.Now().Add(-48 * time.Hour)
+				createSegment(t, dh, 10, 100, oldTime)
+				createSegment(t, dh, 11, 100, time.Now())
+			},
+			expectedDelete: []int{10},
+			expectedKeep:   []int{11},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			baseName := filepath.Join(tmpDir, "test_topic", "partition_0")
+			dh := &disk.DiskHandler{BaseName: baseName}
+			tt.setup(t, dh)
+
+			dh.EnforceRetention(tt.cfg)
+
+			for _, segNum := range tt.expectedDelete {
+				assert.FileExists(t, dh.GetSegmentPath(uint64(segNum))+".deleted", "Log %d should be marked as deleted", segNum)
+				assert.FileExists(t, dh.GetIndexPath(uint64(segNum))+".deleted", "Index %d should be marked as deleted", segNum)
+			}
+			for _, segNum := range tt.expectedKeep {
+				assert.FileExists(t, dh.GetSegmentPath(uint64(segNum)), "Log %d should still exist", segNum)
+				assert.NoFileExists(t, dh.GetSegmentPath(uint64(segNum))+".deleted")
+			}
+		})
+	}
+}
