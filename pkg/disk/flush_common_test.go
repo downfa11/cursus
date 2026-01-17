@@ -13,12 +13,13 @@ import (
 func setupDiskHandler(t *testing.T) *disk.DiskHandler {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		DiskFlushBatchSize: 2,
-		LingerMS:           100,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  500,
-		SegmentSize:        1024,
+		LogDir:              tmpDir,
+		DiskFlushBatchSize:  2,
+		DiskFlushIntervalMS: 50,
+		LingerMS:            100,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   500,
+		SegmentSize:         1024,
 	}
 
 	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
@@ -177,12 +178,13 @@ func TestReadMessagesWithMetadata(t *testing.T) {
 func TestDrainAndShutdown(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		DiskFlushBatchSize: 2,
-		LingerMS:           100,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  500,
-		SegmentSize:        1024,
+		LogDir:              tmpDir,
+		DiskFlushBatchSize:  2,
+		DiskFlushIntervalMS: 50,
+		LingerMS:            100,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   500,
+		SegmentSize:         1024,
 	}
 
 	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0)

@@ -63,7 +63,7 @@ type ConsumerConfig struct {
 	LogLevel util.LogLevel `yaml:"log_level" json:"log_level"`
 }
 
-func LoadConfig() (*ConsumerConfig, error) {
+func LoadConsumerConfig(explicitPath string) (*ConsumerConfig, error) {
 	cfg := &ConsumerConfig{}
 
 	flag.Func("broker-addr", "Comma-separated broker addresses", func(val string) error {
@@ -125,16 +125,21 @@ func LoadConfig() (*ConsumerConfig, error) {
 		cfg.LogLevel = util.LogLevelInfo
 	}
 
-	if *configPath != "" {
-		data, err := os.ReadFile(*configPath)
+	finalPath := explicitPath
+	if finalPath == "" {
+		finalPath = *configPath
+	}
+
+	if finalPath != "" {
+		data, err := os.ReadFile(finalPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				util.Warn("Config file %s not found, using flag defaults", *configPath)
+				util.Warn("Config file %s not found, using flag defaults", finalPath)
 				return cfg, nil
 			}
-			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
+			return nil, fmt.Errorf("failed to read config file %s: %w", finalPath, err)
 		}
-		if strings.HasSuffix(*configPath, ".json") {
+		if strings.HasSuffix(finalPath, ".json") {
 			if err := json.Unmarshal(data, cfg); err != nil {
 				return nil, err
 			}
@@ -226,5 +231,12 @@ func LoadConfig() (*ConsumerConfig, error) {
 	}
 
 	util.SetLevel(cfg.LogLevel)
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		util.Error("Failed to marshal config: %v", err)
+	} else {
+		util.Info("Configuration:\n%s", string(data))
+	}
 	return cfg, nil
 }

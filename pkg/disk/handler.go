@@ -265,14 +265,10 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 		return nil, err
 	}
 
-	dh.indexMu.RLock()
-	position, err := dh.FindOffsetPosition(offset)
-	dh.indexMu.RUnlock()
-
-	idxInfo := fmt.Sprintf("Pos=%d", position) // test
+	position, err := dh.findOffsetPosition(offset)
 	if err != nil {
-		idxInfo = "Pos=0(IdxMiss)" // test
-		position = 0
+		util.Error("Position not found for offset %d", offset)
+		return nil, err
 	}
 
 	dh.mu.Lock()
@@ -285,7 +281,6 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 
 	var messages []types.Message
 	startReading := false
-	var scannedFiles []uint64 // test
 
 	for _, segBase := range readableSegments {
 		if !startReading {
@@ -295,11 +290,11 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 				continue
 			}
 		}
-		scannedFiles = append(scannedFiles, segBase) // test
 
 		currentFile := dh.GetSegmentPath(segBase)
 		fi, err := os.Stat(currentFile)
 		if err != nil {
+			util.Debug("stat failed for %s: %v", currentFile, err)
 			continue
 		}
 
@@ -311,6 +306,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 
 		reader, err := mmap.Open(currentFile)
 		if err != nil {
+			util.Debug("mmap open failed: %v", err)
 			continue
 		}
 
@@ -341,13 +337,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 	if len(messages) > 0 {
 		first := messages[0].Offset
 		last := messages[len(messages)-1].Offset
-		util.Debug("Success: From=%d To=%d (Count=%d)", first, last, len(messages))
-	}
-
-	if len(messages) > 0 {
-		util.Debug("SUCCESS | ReqOff: %d | %s | Seg: %d | Count: %d | Range: [%d-%d] | Scanned: %v", offset, idxInfo, targetSeg, len(messages), messages[0].Offset, messages[len(messages)-1].Offset, scannedFiles)
-	} else {
-		util.Debug("NOT_FOUND | ReqOff: %d | %s | TargetSeg: %d | ScannedSegs: %v", offset, idxInfo, targetSeg, scannedFiles)
+		util.Debug("Success: From=%d To=%d (Count=%d, Range: [%d-%d])", first, last, len(messages), messages[0].Offset, messages[len(messages)-1].Offset)
 	}
 	return messages, nil
 }

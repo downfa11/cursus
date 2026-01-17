@@ -133,19 +133,12 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 		totalSize += 4 + len(serialized)
 	}
 
-	if d.CurrentOffset+uint64(totalSize) > d.SegmentSize {
-		if err := d.rotateSegment(batch[0].Offset); err != nil {
-			return err
-		}
-	}
-
 	const entrySize = uint64(types.IndexEntrySize)
 	willExceedData := d.CurrentOffset+uint64(totalSize) > d.SegmentSize
 	willExceedIndex := d.indexBytesWritten+entrySize > d.IndexSize
 
 	if willExceedData || willExceedIndex {
 		util.Debug("Rolling segment: DataExceed=%v, IndexExceed=%v, CurrentIdxBytes=%d", willExceedData, willExceedIndex, d.indexBytesWritten)
-
 		if err := d.rotateSegment(batch[0].Offset); err != nil {
 			return err
 		}
@@ -260,9 +253,9 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 				util.Error("failed to flush index writer: %v", err)
 			}
 			d.lastIndexPosition = msgPosition
+			d.indexBytesWritten += uint64(types.IndexEntrySize)
 		}
 	}
-
 	d.CurrentOffset += totalLen
 	return nil
 }

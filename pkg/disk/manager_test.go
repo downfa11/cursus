@@ -12,12 +12,13 @@ import (
 func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		LingerMS:           100,
-		DiskFlushBatchSize: 10,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  60000,
-		ChannelBufferSize:  100,
+		LogDir:              tmpDir,
+		LingerMS:            100,
+		DiskFlushBatchSize:  10,
+		DiskFlushIntervalMS: 500,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   60000,
+		ChannelBufferSize:   100,
 	}
 
 	dm := disk.NewDiskManager(cfg)
@@ -46,12 +47,13 @@ func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {
 func TestDiskManager_CloseAllHandlers(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		LingerMS:           50,
-		DiskFlushBatchSize: 10,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  60000,
-		ChannelBufferSize:  100,
+		LogDir:              tmpDir,
+		LingerMS:            50,
+		DiskFlushBatchSize:  10,
+		DiskFlushIntervalMS: 50,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   60000,
+		ChannelBufferSize:   100,
 	}
 
 	dm := disk.NewDiskManager(cfg)

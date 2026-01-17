@@ -97,8 +97,10 @@ func (d *DiskHandler) EnforceRetention(cfg *config.Config) {
 		isOverCapacity := cfg.RetentionBytes > 0 && totalSize > cfg.RetentionBytes
 
 		if isExpired || isOverCapacity {
-			if atomic.LoadInt32(&d.activeReaders) == 0 {
-				d.markAsDeleted(filePath)
+			fileSize := info.Size()
+			if err := d.markAsDeleted(filePath); err == nil {
+				totalSize -= fileSize
+				util.Debug("Retention: deleted %s, remaining totalSize: %d", filePath, totalSize)
 			} else {
 				util.Debug("Retention: %s is target but busy, skipping", filePath)
 				break

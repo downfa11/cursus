@@ -14,6 +14,16 @@ import (
 
 func (d *DiskHandler) openIndexFiles() error {
 	indexPath := d.GetIndexPath(d.CurrentSegment)
+
+	info, statErr := os.Stat(indexPath)
+	var isNew bool
+	var existingSize uint64
+	if os.IsNotExist(statErr) {
+		isNew = true
+	} else if statErr == nil {
+		existingSize = uint64(info.Size())
+	}
+
 	f, err := os.OpenFile(indexPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		if os.IsPermission(err) {
@@ -27,15 +37,21 @@ func (d *DiskHandler) openIndexFiles() error {
 		}
 	}
 
-	var writer *bufio.Writer
-	info, err := f.Stat()
-	if err == nil && info.Mode().Perm()&0200 != 0 {
-		writer = bufio.NewWriter(f)
+	if err := f.Truncate(int64(d.IndexSize)); err != nil {
+		f.Close()
+		return fmt.Errorf("failed to truncate index file: %w", err)
 	}
+
+	var writer *bufio.Writer
+	writer = bufio.NewWriter(f)
 
 	d.indexMu.Lock()
 	d.indexFile = f
-	d.indexBytesWritten = uint64(info.Size())
+	if isNew {
+		d.indexBytesWritten = 0
+	} else {
+		d.indexBytesWritten = existingSize
+	}
 	d.indexWriter = writer
 	err = d.refreshIndexMapper(indexPath)
 	d.indexMu.Unlock()
@@ -119,6 +135,10 @@ func (dh *DiskHandler) findSegmentForOffset(offset uint64) (string, uint64, erro
 	dh.mu.Lock()
 	defer dh.mu.Unlock()
 
+	if offset >= dh.CurrentSegment {
+		return dh.GetSegmentPath(dh.CurrentSegment), dh.CurrentSegment, nil
+	}
+
 	if len(dh.segments) == 0 {
 		return "", 0, fmt.Errorf("no segments available")
 	}
@@ -131,17 +151,12 @@ func (dh *DiskHandler) findSegmentForOffset(offset uint64) (string, uint64, erro
 	if idx > 0 {
 		baseOffset = dh.segments[idx-1]
 	} else {
-		baseOffset = dh.CurrentSegment
+		baseOffset = dh.segments[0]
 	}
-
-	if offset >= dh.CurrentSegment {
-		baseOffset = dh.CurrentSegment
-	}
-
 	return dh.GetSegmentPath(baseOffset), baseOffset, nil
 }
 
-func (d *DiskHandler) FindOffsetPosition(offset uint64) (uint64, error) {
+func (d *DiskHandler) findOffsetPosition(offset uint64) (uint64, error) {
 	d.indexMu.RLock()
 	defer d.indexMu.RUnlock()
 
@@ -150,10 +165,13 @@ func (d *DiskHandler) FindOffsetPosition(offset uint64) (uint64, error) {
 	}
 
 	const entrySize = types.IndexEntrySize
-	length := d.indexMapper.Len()
-	entryCount := length / entrySize
+	entryCount := d.indexBytesWritten / entrySize
 
-	low, high := 0, entryCount-1
+	if entryCount == 0 {
+		return 0, nil
+	}
+
+	low, high := 0, int(entryCount)-1
 	var lastFoundPos uint64 = 0
 	buf := make([]byte, entrySize)
 
@@ -166,11 +184,6 @@ func (d *DiskHandler) FindOffsetPosition(offset uint64) (uint64, error) {
 
 		eOffset := binary.BigEndian.Uint64(buf[0:8])
 		ePosition := binary.BigEndian.Uint64(buf[8:16])
-
-		if eOffset == 0 && ePosition == 0 && mid > 0 {
-			high = mid - 1
-			continue
-		}
 
 		if eOffset == offset {
 			return ePosition, nil

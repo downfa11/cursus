@@ -1,28 +1,28 @@
-package disk_test
+package disk
 
 import (
-	"encoding/binary"
 	"os"
 	"testing"
 
 	"github.com/downfa11-org/cursus/pkg/config"
-	"github.com/downfa11-org/cursus/pkg/disk"
 	"github.com/downfa11-org/cursus/pkg/types"
 )
 
-func setupDiskHandlerWithIndex(t *testing.T) *disk.DiskHandler {
+func setupDiskHandlerWithIndex(t *testing.T) *DiskHandler {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		DiskFlushBatchSize: 2,
-		LingerMS:           100,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  500,
-		SegmentSize:        1024,
-		IndexIntervalBytes: 10,
+		LogDir:              tmpDir,
+		DiskFlushBatchSize:  100,
+		DiskFlushIntervalMS: 50,
+		LingerMS:            100,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   500,
+		SegmentSize:         1024,
+		IndexIntervalBytes:  10,
+		IndexSize:           1024 * 1024,
 	}
 
-	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
+	dh, err := NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {
 		t.Fatalf("failed to create DiskHandler: %v", err)
 	}
@@ -48,60 +48,6 @@ func TestOpenAndCloseIndexFiles(t *testing.T) {
 	}
 }
 
-func TestFindOffsetPosition(t *testing.T) {
-	dh := setupDiskHandlerWithIndex(t)
-	defer dh.Close()
-
-	if err := dh.OpenIndexFiles(); err != nil {
-		t.Fatalf("failed to open index files: %v", err)
-	}
-
-	testEntries := []struct {
-		offset   uint64
-		position uint64
-	}{
-		{0, 100},
-		{10, 200},
-		{20, 300},
-	}
-
-	for _, entry := range testEntries {
-		indexEntry := types.IndexEntry{
-			Position: entry.position,
-			Offset:   entry.offset,
-		}
-
-		if err := binary.Write(dh.GetIndexFile(), binary.BigEndian, indexEntry); err != nil {
-			t.Fatalf("failed to write index entry: %v", err)
-		}
-	}
-
-	if err := dh.GetIndexFile().Sync(); err != nil {
-		t.Fatalf("failed to sync index file: %v", err)
-	}
-
-	pos, err := dh.FindOffsetPosition(10)
-	if err != nil {
-		t.Fatalf("failed to find offset 10: %v", err)
-	}
-	if pos != 200 {
-		t.Errorf("expected position 200 for offset 10, got %d", pos)
-	}
-
-	pos, err = dh.FindOffsetPosition(15)
-	if err != nil {
-		t.Fatalf("failed to find offset 15: %v", err)
-	}
-	if pos != 200 {
-		t.Errorf("expected position 200 for offset 15 (closest previous), got %d", pos)
-	}
-
-	_, err = dh.FindOffsetPosition(5)
-	if err != nil {
-		t.Errorf("unexpected error for offset 5: %v", err)
-	}
-}
-
 func TestIndexFileErrorHandling(t *testing.T) {
 	dh := setupDiskHandlerWithIndex(t)
 	defer dh.Close()
@@ -115,4 +61,45 @@ func TestIndexFileErrorHandling(t *testing.T) {
 	}
 
 	dh.BaseName = originalBaseName
+}
+
+func TestFindOffsetPosition(t *testing.T) {
+	dh := setupDiskHandlerWithIndex(t)
+	defer dh.Close()
+
+	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
+	offsets := make([]uint64, len(messages))
+
+	for i, content := range messages {
+		msg := &types.Message{
+			Payload: content,
+			SeqNum:  uint64(i),
+		}
+		off, err := dh.AppendMessageSync("testTopic", 0, msg)
+		if err != nil {
+			t.Fatalf("failed to append message %d: %v", i, err)
+		}
+		offsets[i] = off
+	}
+
+	dh.Flush()
+
+	targetOffset := offsets[2]
+	pos, err := dh.findOffsetPosition(targetOffset)
+	if err != nil {
+		t.Fatalf("failed to find offset position: %v", err)
+	}
+
+	if pos == 0 && targetOffset > 0 {
+		t.Errorf("expected non-zero position for offset %d, got 0. Check indexBytesWritten: %d", targetOffset, dh.indexBytesWritten)
+	}
+
+	messagesRead, err := dh.ReadMessages(targetOffset, 1)
+	if err != nil {
+		t.Fatalf("ReadMessages failed using index: %v", err)
+	}
+
+	if len(messagesRead) != 1 || messagesRead[0].Offset != targetOffset {
+		t.Errorf("Index pointed to wrong position. Expected offset %d, got %v", targetOffset, messagesRead)
+	}
 }

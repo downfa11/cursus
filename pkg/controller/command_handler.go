@@ -349,7 +349,6 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 
 	offset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
 	if !isFind {
-		util.Debug("No offset found for group %s, returning default 0", groupName)
 		return "0"
 	}
 
