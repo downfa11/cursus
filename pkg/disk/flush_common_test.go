@@ -66,6 +66,7 @@ func TestWriteBatchRotation(t *testing.T) {
 
 	payloadSize := int(dh.SegmentSize / 2)
 	payload := make([]byte, payloadSize)
+
 	for i := range payload {
 		payload[i] = 'x'
 	}
