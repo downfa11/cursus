@@ -45,6 +45,9 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 }
 
 func (t *Topic) GetPartitionForMessage(msg types.Message) int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	partitionsLen := uint64(len(t.Partitions))
 	if partitionsLen == 0 {
 		return -1
@@ -118,8 +121,16 @@ func (t *Topic) DeregisterConsumerGroup(groupName string) error {
 // Publish sends a message to one partition.
 func (t *Topic) Publish(msg types.Message) {
 	idx := t.GetPartitionForMessage(msg)
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if idx == -1 {
 		util.Error("❌ No partitions available for topic '%s'", t.Name)
+		return
+	}
+	if idx < 0 || idx >= len(t.Partitions) {
+		util.Error("❌ Partition index %d out of range for topic '%s'", idx, t.Name)
 		return
 	}
 
@@ -129,11 +140,17 @@ func (t *Topic) Publish(msg types.Message) {
 
 func (t *Topic) PublishSync(msg types.Message) error {
 	idx := t.GetPartitionForMessage(msg)
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if idx == -1 {
 		return fmt.Errorf("no partitions available for topic '%s'", t.Name)
 	}
+	if idx < 0 || idx >= len(t.Partitions) {
+		return fmt.Errorf("partition index %d out of range", idx)
+	}
 
-	util.Debug("Sync publish to topic: %s, partition: %d", t.Name, idx)
 	return t.Partitions[idx].EnqueueSync(msg)
 }
 
@@ -141,8 +158,8 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-	partitioned := make(map[int][]types.Message)
 
+	partitioned := make(map[int][]types.Message)
 	for _, msg := range msgs {
 		idx := t.GetPartitionForMessage(msg)
 		if idx != -1 {
@@ -150,13 +167,39 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 		}
 	}
 
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	for idx, pm := range partitioned {
+		if idx < 0 || idx >= len(t.Partitions) {
+			continue
+		}
+
 		p := t.Partitions[idx]
 		if err := p.EnqueueBatchSync(pm); err != nil {
 			return fmt.Errorf("partition %d: failed to publish batch: %w", idx, err)
 		}
 	}
 	return nil
+}
+
+func (t *Topic) GetPartition(partitionID int) (*Partition, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if partitionID < 0 || partitionID >= len(t.Partitions) {
+		return nil, fmt.Errorf("partition %d out of range for topic '%s' (0-%d)", partitionID, t.Name, len(t.Partitions)-1)
+	}
+
+	return t.Partitions[partitionID], nil
+}
+
+func (t *Topic) ReadSafeMessages(partitionID int, offset uint64, max int) ([]types.Message, error) {
+	p, err := t.GetPartition(partitionID)
+	if err != nil {
+		return nil, err
+	}
+	return p.ReadCommitted(offset, max)
 }
 
 // applyAssignments connects partitions to consumers according to coordinator results.

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -18,17 +17,10 @@ import (
 )
 
 func main() {
-	cfg, err := config.LoadPublisherConfig()
+	cfg, err := config.LoadPublisherConfig("/config.yaml")
 	if err != nil {
 		fmt.Printf("Failed to load config: %v\n", err)
 		os.Exit(1)
-	}
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		util.Error("Failed to marshal config: %v", err)
-	} else {
-		util.Info("Configuration:\n%s", string(data))
 	}
 
 	pub, err := producer.NewPublisher(cfg)

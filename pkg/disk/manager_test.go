@@ -1,24 +1,25 @@
 package disk_test
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/downfa11-org/cursus/pkg/config"
 	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		LingerMS:           100,
-		DiskFlushBatchSize: 10,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  60000,
-		ChannelBufferSize:  100,
+		LogDir:              tmpDir,
+		LingerMS:            100,
+		DiskFlushBatchSize:  10,
+		DiskFlushIntervalMS: 500,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   60000,
+		ChannelBufferSize:   100,
 	}
 
 	dm := disk.NewDiskManager(cfg)
@@ -29,7 +30,7 @@ func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetHandler failed: %v", err)
 	}
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	if dh == nil {
 		t.Fatalf("expected DiskHandler, got nil")
@@ -47,17 +48,18 @@ func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {
 func TestDiskManager_CloseAllHandlers(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		LingerMS:           50,
-		DiskFlushBatchSize: 10,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  60000,
-		ChannelBufferSize:  100,
+		LogDir:              tmpDir,
+		LingerMS:            50,
+		DiskFlushBatchSize:  10,
+		DiskFlushIntervalMS: 50,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   60000,
+		ChannelBufferSize:   100,
 	}
 
 	dm := disk.NewDiskManager(cfg)
 	topics := []string{"topic1", "topic2"}
-	handlers := []*disk.DiskHandler{}
+	handlers := []types.StorageHandler{}
 
 	for i, topic := range topics {
 		dh, err := dm.GetHandler(topic, i)
@@ -72,14 +74,16 @@ func TestDiskManager_CloseAllHandlers(t *testing.T) {
 
 	defer func() {
 		for _, dh := range handlers {
-			dh.Close()
+			if err := dh.Close(); err != nil {
+				util.Warn("Failed to close DiskHandler: %v", err)
+			}
 		}
 	}()
 
 	dm.CloseAllHandlers()
 
-	for i, topic := range topics {
-		filePath := filepath.Join(tmpDir, topic, fmt.Sprintf("partition_%d_segment_0.log", i))
+	for i := range topics {
+		filePath := handlers[i].GetSegmentPath(0)
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			t.Fatalf("expected segment file %s to exist", filePath)
 		}

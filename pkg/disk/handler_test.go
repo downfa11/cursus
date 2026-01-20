@@ -14,21 +14,21 @@ import (
 func TestDiskHandlerBasic(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
-		DiskFlushBatchSize: 3,
-		LingerMS:           50,
-		ChannelBufferSize:  5,
-		DiskWriteTimeoutMS: 100,
-		LogDir:             dir,
+		DiskFlushBatchSize:  5,
+		DiskFlushIntervalMS: 50,
+		LingerMS:            50,
+		ChannelBufferSize:   5,
+		DiskWriteTimeoutMS:  100,
+		IndexIntervalBytes:  4096,
+		LogDir:              dir,
 	}
 
 	topic := "testlog"
-	segmentSize := 1024
-
-	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0)
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
 	for i, payload := range messages {
@@ -52,7 +52,7 @@ func TestDiskHandlerBasic(t *testing.T) {
 		t.Fatalf("glob %s: %v", pattern, err)
 	}
 	if len(files) == 0 {
-		t.Fatalf("Expected at least 1 segment file, got %d", len(files))
+		t.Fatalf("expected at least 1 segment file, got %d", len(files))
 	}
 
 	readMsgs, err := dh.ReadMessages(0, len(messages))
@@ -82,21 +82,21 @@ func TestDiskHandlerBasic(t *testing.T) {
 func TestDiskHandlerChannelOverflow(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
-		DiskFlushBatchSize: 2,
-		LingerMS:           50,
-		ChannelBufferSize:  2,
-		DiskWriteTimeoutMS: 100,
-		LogDir:             dir,
+		DiskFlushBatchSize:  2,
+		DiskFlushIntervalMS: 50,
+		LingerMS:            50,
+		ChannelBufferSize:   2,
+		DiskWriteTimeoutMS:  100,
+		IndexIntervalBytes:  4096,
+		LogDir:              dir,
 	}
 
 	topic := "overflowlog"
-	segmentSize := 1024
-
-	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0)
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	off1, err := dh.AppendMessage(topic, 0, &types.Message{
 		Payload: "first",
@@ -165,21 +165,22 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 func TestDiskHandlerRotation(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
-		DiskFlushBatchSize: 1,
-		LingerMS:           10,
-		ChannelBufferSize:  10,
-		DiskWriteTimeoutMS: 100,
-		LogDir:             dir,
+		DiskFlushBatchSize:  1,
+		DiskFlushIntervalMS: 10,
+		LingerMS:            10,
+		ChannelBufferSize:   10,
+		DiskWriteTimeoutMS:  100,
+		IndexIntervalBytes:  4096,
+		LogDir:              dir,
+		SegmentSize:         20,
 	}
 
 	topic := "rotationlog"
-	segmentSize := 10
-
-	dh, err := disk.NewDiskHandler(cfg, topic, 0, segmentSize)
+	dh, err := disk.NewDiskHandler(cfg, topic, 0)
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	msgs := []string{"12345", "67890", "abcde"}
 	for i, m := range msgs {

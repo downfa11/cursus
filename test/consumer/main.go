@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
@@ -13,16 +12,9 @@ import (
 )
 
 func main() {
-	cfg, err := config.LoadConfig()
+	cfg, err := config.LoadConsumerConfig("/config.yaml")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		util.Error("Failed to marshal config: %v", err)
-	} else {
-		util.Info("Configuration:\n%s", string(data))
 	}
 
 	c, err := subscriber.NewConsumer(cfg)

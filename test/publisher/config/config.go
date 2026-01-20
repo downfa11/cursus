@@ -53,7 +53,7 @@ type PublisherConfig struct {
 	LogLevel util.LogLevel `yaml:"log_level" json:"log_level"`
 }
 
-func LoadPublisherConfig() (*PublisherConfig, error) {
+func LoadPublisherConfig(explicitPath string) (*PublisherConfig, error) {
 	cfg := &PublisherConfig{}
 
 	flag.Func("broker-addr", "Comma-separated broker addresses", func(val string) error {
@@ -115,16 +115,21 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		cfg.LogLevel = util.LogLevelInfo
 	}
 
-	if *configPath != "" {
-		data, err := os.ReadFile(*configPath)
+	finalPath := *configPath
+	if explicitPath != "" {
+		finalPath = explicitPath
+	}
+
+	if finalPath != "" {
+		data, err := os.ReadFile(finalPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				util.Error("Config file %s not found, using flag defaults", *configPath)
+				util.Error("Config file %s not found, using flag defaults", finalPath)
 			} else {
-				return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
+				return nil, fmt.Errorf("failed to read config file %s: %w", finalPath, err)
 			}
 		} else {
-			if strings.HasSuffix(*configPath, ".json") {
+			if strings.HasSuffix(finalPath, ".json") {
 				if err := json.Unmarshal(data, cfg); err != nil {
 					util.Warn("Failed to parse JSON config: %v", err)
 				}
@@ -214,5 +219,12 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	}
 
 	util.SetLevel(cfg.LogLevel)
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		util.Error("Failed to marshal config: %v", err)
+	} else {
+		util.Info("Configuration:\n%s", string(data))
+	}
 	return cfg, nil
 }

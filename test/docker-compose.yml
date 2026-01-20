@@ -25,8 +25,8 @@ services:
 
   publisher:
     build:
-      context: ./publisher
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: test/publisher/Dockerfile
     container_name: bench-publisher
     depends_on:
       broker:
@@ -39,8 +39,8 @@ services:
 
   consumer:
     build:
-      context: ./consumer
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: test/consumer/Dockerfile
     container_name: bench-consumer
     depends_on:
       broker:

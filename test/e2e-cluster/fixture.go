@@ -109,7 +109,7 @@ func (c *ClusterTestContext) WithAcks(acks string) *ClusterTestContext {
 
 func (c *ClusterTestContext) WithClusterSize(size int) *ClusterTestContext {
 	c.clusterSize = size
-	c.TestContext.SetBrokerAddrs(clusterBrokerAddrs(size))
+	c.SetBrokerAddrs(clusterBrokerAddrs(size))
 	c.GetT().Logf("Cluster size configured to: %d", size)
 	return c
 }

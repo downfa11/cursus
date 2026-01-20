@@ -2,27 +2,29 @@ package disk_test
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/downfa11-org/cursus/pkg/config"
 	"github.com/downfa11-org/cursus/pkg/disk"
 	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 func setupDiskHandler(t *testing.T) *disk.DiskHandler {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		DiskFlushBatchSize: 2,
-		LingerMS:           100,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  500,
-		SegmentSize:        1024,
+		LogDir:              tmpDir,
+		DiskFlushBatchSize:  2,
+		DiskFlushIntervalMS: 50,
+		LingerMS:            100,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   500,
+		SegmentSize:         1024,
+		IndexIntervalBytes:  4096,
 	}
 
-	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0, cfg.SegmentSize)
+	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {
 		t.Fatalf("failed to create DiskHandler: %v", err)
 	}
@@ -32,7 +34,7 @@ func setupDiskHandler(t *testing.T) *disk.DiskHandler {
 
 func TestWriteDirectAndFlush(t *testing.T) {
 	dh := setupDiskHandler(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	for i := 0; i < 3; i++ {
 		msg := types.Message{
@@ -54,7 +56,7 @@ func TestWriteDirectAndFlush(t *testing.T) {
 		t.Fatalf("expected AbsoluteOffset 3, got %d", dh.GetAbsoluteOffset())
 	}
 
-	filePath := filepath.Join(dh.BaseName + "_segment_0.log")
+	filePath := dh.GetSegmentPath(0)
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		t.Fatalf("expected segment file to exist at %s", filePath)
 	}
@@ -62,9 +64,11 @@ func TestWriteDirectAndFlush(t *testing.T) {
 
 func TestWriteBatchRotation(t *testing.T) {
 	dh := setupDiskHandler(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
-	payload := make([]byte, dh.SegmentSize/2)
+	payloadSize := int(dh.SegmentSize / 2)
+	payload := make([]byte, payloadSize)
+
 	for i := range payload {
 		payload[i] = 'x'
 	}
@@ -84,7 +88,7 @@ func TestWriteBatchRotation(t *testing.T) {
 
 func TestFlushLoopAsync(t *testing.T) {
 	dh := setupDiskHandler(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	msgs := []struct {
 		payload string
@@ -125,7 +129,7 @@ func TestFlushLoopAsync(t *testing.T) {
 
 func TestReadMessagesWithMetadata(t *testing.T) {
 	dh := setupDiskHandler(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	testMessages := []struct {
 		topic     string
@@ -178,15 +182,16 @@ func TestReadMessagesWithMetadata(t *testing.T) {
 func TestDrainAndShutdown(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		LogDir:             tmpDir,
-		DiskFlushBatchSize: 2,
-		LingerMS:           100,
-		DiskWriteTimeoutMS: 500,
-		SegmentRollTimeMS:  500,
-		SegmentSize:        1024,
+		LogDir:              tmpDir,
+		DiskFlushBatchSize:  2,
+		DiskFlushIntervalMS: 50,
+		LingerMS:            100,
+		DiskWriteTimeoutMS:  500,
+		SegmentRollTimeMS:   500,
+		SegmentSize:         1024,
 	}
 
-	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0, cfg.SegmentSize)
+	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {
 		t.Fatalf("failed to create DiskHandler: %v", err)
 	}
@@ -205,13 +210,15 @@ func TestDrainAndShutdown(t *testing.T) {
 		}
 	}
 
-	dh.Close()
+	if err := dh.Close(); err != nil {
+		util.Warn("Failed to close DiskHandler: %v", err)
+	}
 
-	newDh, err := disk.NewDiskHandler(cfg, "testTopic", 0, cfg.SegmentSize)
+	newDh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {
 		t.Fatalf("failed to reopen DiskHandler: %v", err)
 	}
-	defer newDh.Close()
+	defer func() { _ = newDh.Close() }()
 
 	msgs, err := newDh.ReadMessages(0, 2)
 	if err != nil {

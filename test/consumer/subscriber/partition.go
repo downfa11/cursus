@@ -17,9 +17,11 @@ type PartitionConsumer struct {
 
 	fetchOffset  uint64
 	commitOffset uint64
-	conn         net.Conn
-	mu           sync.Mutex
-	closed       bool
+
+	conn    net.Conn
+	mu      sync.Mutex
+	closed  bool
+	backoff *backoff
 
 	dataCh    chan *types.Batch
 	once      sync.Once
@@ -143,16 +145,19 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		return
 	}
 
+	bo := pc.getBackoff()
 	batchData, err := util.ReadWithLength(conn)
 	if err != nil {
 		util.Error("Partition [%d] read batch error: %v", pc.partitionID, err)
 		pc.closeConnection()
-		time.Sleep(500 * time.Millisecond)
+		pc.waitWithBackoff(bo)
 		return
 	}
 
 	if pc.handleBrokerError(batchData) || len(batchData) == 0 {
-		time.Sleep(200 * time.Millisecond)
+		if !pc.waitWithBackoff(bo) {
+			return
+		}
 		return
 	}
 
@@ -165,6 +170,8 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	select {
 	case pc.dataCh <- batch:
 		if len(batch.Messages) > 0 {
+			bo.reset()
+
 			firstMsg := batch.Messages[0]
 			lastMsg := batch.Messages[len(batch.Messages)-1]
 
@@ -187,8 +194,7 @@ func (pc *PartitionConsumer) startStreamLoop() {
 	pid := pc.partitionID
 	c := pc.consumer
 
-	minRetry := time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond
-	bo := newBackoff(minRetry, 30*time.Second)
+	bo := pc.getBackoff()
 	defer pc.closeDataCh()
 
 	for {
@@ -201,13 +207,17 @@ func (pc *PartitionConsumer) startStreamLoop() {
 
 		if atomic.LoadInt32(&c.rebalancing) == 1 {
 			pc.closeConnection()
-			time.Sleep(500 * time.Millisecond)
+			if !pc.waitWithBackoff(bo) {
+				return
+			}
 			continue
 		}
 
 		if err := pc.ensureConnection(); err != nil {
 			util.Warn("Partition [%d] streaming connection failed, retrying: %v", pid, err)
-			time.Sleep(bo.duration())
+			if !pc.waitWithBackoff(bo) {
+				return
+			}
 			continue
 		}
 
@@ -218,8 +228,6 @@ func (pc *PartitionConsumer) startStreamLoop() {
 		}
 		pc.consumer.offsetsMu.Unlock()
 
-		bo.reset()
-
 		pc.mu.Lock()
 		conn := pc.conn
 		currentOffset := atomic.LoadUint64(&pc.fetchOffset)
@@ -229,23 +237,20 @@ func (pc *PartitionConsumer) startStreamLoop() {
 		memberID, generation := c.memberID, c.generation
 		c.mu.RUnlock()
 
-		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d generation=%d member=%s",
-			c.config.Topic, pid, c.config.GroupID, currentOffset, generation, memberID)
+		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d generation=%d member=%s", c.config.Topic, pid, c.config.GroupID, currentOffset, generation, memberID)
 		util.Debug("Partition [%d] sending STREAM command with offset %d", pid, currentOffset)
 
 		if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
 			util.Error("Partition [%d] STREAM command send failed: %v", pid, err)
 			pc.closeConnection()
-			time.Sleep(bo.duration())
+			if !pc.waitWithBackoff(bo) {
+				return
+			}
 			continue
 		}
 
 		idleTimeout := time.Duration(c.config.StreamingReadDeadlineMS) * time.Millisecond
-		for {
-			if atomic.LoadInt32(&c.rebalancing) == 1 {
-				break
-			}
-
+		for atomic.LoadInt32(&c.rebalancing) != 1 {
 			if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
 				util.Error("Partition [%d] failed to set read deadline: %v", pid, err)
 				pc.closeConnection()
@@ -255,37 +260,53 @@ func (pc *PartitionConsumer) startStreamLoop() {
 			batchData, err := util.ReadWithLength(conn)
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					util.Debug("Partition [%d] idle timeout, continuing stream read.", pid)
 					continue
 				}
 
 				util.Error("Partition [%d] Stream read fatal error: %v", pid, err)
 				pc.closeConnection()
+				if !pc.waitWithBackoff(bo) {
+					return
+				}
 				break
 			}
 
 			if len(batchData) == 0 || pc.handleBrokerError(batchData) {
+				if !pc.waitWithBackoff(bo) {
+					return
+				}
 				continue
 			}
 
 			batch, err := util.DecodeBatchMessages(batchData)
 			if err != nil {
 				util.Error("Partition [%d] stream decode error: %v", pid, err)
-				time.Sleep(bo.duration())
+				if !pc.waitWithBackoff(bo) {
+					return
+				}
 				continue
 			}
 
 			select {
 			case pc.dataCh <- batch:
 				if len(batch.Messages) > 0 {
+					bo.reset()
 					lastOffset := batch.Messages[len(batch.Messages)-1].Offset
 					atomic.StoreUint64(&pc.fetchOffset, lastOffset+1)
+				} else {
+					bo.reset()
+
+					select {
+					case <-time.After(100 * time.Millisecond):
+					case <-c.doneCh:
+						return
+					case <-c.mainCtx.Done():
+						return
+					}
 				}
 			case <-c.doneCh:
 				return
 			}
-			bo.reset()
 		}
-		time.Sleep(bo.duration())
 	}
 }

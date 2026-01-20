@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/types"
 	"github.com/downfa11-org/cursus/util"
 )
 
@@ -22,8 +23,8 @@ func NewDiskManager(cfg *config.Config) *DiskManager {
 	}
 }
 
-// GetHandler returns a DiskHandler for a given name or creates one if missing
-func (dm *DiskManager) GetHandler(topic string, partitionID int) (*DiskHandler, error) {
+// GetHandler returns a StorageHandler for a given name or creates one if missing
+func (dm *DiskManager) GetHandler(topic string, partitionID int) (types.StorageHandler, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -32,16 +33,11 @@ func (dm *DiskManager) GetHandler(topic string, partitionID int) (*DiskHandler, 
 		return dh, nil
 	}
 
-	segmentSize := dm.cfg.SegmentSize
-	if segmentSize == 0 {
-		segmentSize = 1024 * 1024 // Default to 1MB if not set
-	}
-
 	if err := os.MkdirAll(dm.cfg.LogDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory %s: %w", dm.cfg.LogDir, err)
 	}
 
-	dh, err := NewDiskHandler(dm.cfg, topic, partitionID, segmentSize)
+	dh, err := NewDiskHandler(dm.cfg, topic, partitionID)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +53,9 @@ func (dm *DiskManager) CloseAllHandlers() {
 
 	for name, dh := range dm.handlers {
 		util.Debug("Closing DiskHandler for %s", name)
-		dh.Close()
+		if err := dh.Close(); err != nil {
+			util.Warn("Failed to close DiskHandler for %s: %v", name, err)
+		}
 		delete(dm.handlers, name)
 	}
 }

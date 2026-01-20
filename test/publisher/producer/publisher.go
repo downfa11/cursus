@@ -135,7 +135,7 @@ func (p *Publisher) CreateTopic(topic string, partitions int) error {
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	createCmd := fmt.Sprintf("CREATE topic=%s partitions=%d", topic, partitions)
 	cmdBytes := util.EncodeMessage("admin", createCmd)
@@ -162,12 +162,19 @@ func (p *Publisher) PublishMessage(message string) (uint64, error) {
 		return 0, fmt.Errorf("publisher closed")
 	}
 
+	p.closeMu.Lock()
 	part := p.nextPartition()
 	buf := p.buffers[part]
+	p.closeMu.Unlock()
 
 	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	if buf.closed {
+		return 0, fmt.Errorf("partition %d buffer is closed", part)
+	}
+
 	if len(buf.msgs) >= p.config.BufferSize {
-		buf.mu.Unlock()
 		return 0, fmt.Errorf("partition %d buffer full", part)
 	}
 
@@ -181,7 +188,6 @@ func (p *Publisher) PublishMessage(message string) (uint64, error) {
 
 	buf.msgs = append(buf.msgs, bm)
 	buf.cond.Signal()
-	buf.mu.Unlock()
 
 	return seqNum, nil
 }
@@ -501,7 +507,6 @@ func (p *Publisher) markBatchAckedByID(part int, batchID string, batchLen int) {
 	p.partitionBatchMus[part].Unlock()
 
 	p.ackedCount.Store(state.EndSeqNum)
-	p.producer.CommitSeqRange(part, state.EndSeqNum)
 
 	elapsed := time.Since(state.SentTime)
 	p.bmMu.Lock()
@@ -710,7 +715,10 @@ func (p *Publisher) Close() {
 
 	p.gcTicker.Stop()
 	p.sendersWG.Wait()
-	p.producer.Close()
+
+	if err := p.producer.Close(); err != nil {
+		util.Debug("error closing producer: %v", err)
+	}
 }
 
 // GetPartitionStats returns benchmark statistics for all partitions

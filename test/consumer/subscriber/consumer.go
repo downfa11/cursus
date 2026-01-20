@@ -48,8 +48,8 @@ type Consumer struct {
 	hbConn net.Conn
 	hbMu   sync.Mutex
 
-	closed  bool
-	closeMu sync.Mutex
+	closed     int32
+	bmFinished int32 // 0: running, 1: finished
 
 	bmStartTime time.Time
 	metrics     *bench.ConsumerMetrics
@@ -118,14 +118,18 @@ func (c *Consumer) validateCommitConn() bool {
 
 	if err := c.commitConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond)); err != nil {
 		util.Debug("failed to set read deadline: %v", err)
-		c.commitConn.Close()
+		if err := c.commitConn.Close(); err != nil {
+			util.Debug("failed to close invalid commit connection: %v", err)
+		}
 		c.commitConn = nil
 		return false
 	}
 
 	_, err := c.commitConn.Read(make([]byte, 0))
 	if err != nil && !os.IsTimeout(err) {
-		c.commitConn.Close()
+		if err := c.commitConn.Close(); err != nil {
+			util.Debug("failed to close broken commit connection: %v", err)
+		}
 		c.commitConn = nil
 		return false
 	}
@@ -185,7 +189,9 @@ func (c *Consumer) Start() error {
 	if c.config.EnableBenchmark {
 		go func() {
 			c.waitForBenchmarkCompletion()
-			c.Close()
+			if err := c.Close(); err != nil {
+				util.Debug("failed to close consumer: %v", err)
+			}
 		}()
 	}
 	<-c.mainCtx.Done()
@@ -202,10 +208,19 @@ func (c *Consumer) startCommitWorker() {
 		pendingOffsets := make(map[int]uint64)
 		respChannels := make(map[int][]chan error)
 
+		flush := func() {
+			if len(pendingOffsets) > 0 {
+				c.commitBatch(pendingOffsets, respChannels)
+				pendingOffsets = make(map[int]uint64)
+				respChannels = make(map[int][]chan error)
+			}
+		}
+
 		for {
 			select {
 			case entry, ok := <-c.commitCh:
 				if !ok {
+					flush()
 					return
 				}
 
@@ -215,25 +230,16 @@ func (c *Consumer) startCommitWorker() {
 
 				if entry.respCh != nil {
 					respChannels[entry.partition] = append(respChannels[entry.partition], entry.respCh)
-					c.commitBatch(pendingOffsets, respChannels)
-					pendingOffsets = make(map[int]uint64)
-					respChannels = make(map[int][]chan error)
+					flush()
 				}
 
 			case <-ticker.C:
 				c.flushOffsets()
-
-				if len(pendingOffsets) > 0 {
-					c.commitBatch(pendingOffsets, respChannels)
-					pendingOffsets = make(map[int]uint64)
-					respChannels = make(map[int][]chan error)
-				}
+				flush()
 				c.processRetryQueue()
 
 			case <-c.mainCtx.Done():
-				if len(pendingOffsets) > 0 {
-					c.commitBatch(pendingOffsets, respChannels)
-				}
+				flush()
 				return
 			}
 		}
@@ -268,7 +274,7 @@ func (c *Consumer) commitBatch(offsets map[int]uint64, respChannels map[int][]ch
 }
 
 func (c *Consumer) waitForBenchmarkCompletion() {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -433,7 +439,7 @@ func (c *Consumer) heartbeatLoop() {
 func (c *Consumer) resetHeartbeatConn() {
 	c.hbMu.Lock()
 	if c.hbConn != nil {
-		c.hbConn.Close()
+		_ = c.hbConn.Close()
 		c.hbConn = nil
 	}
 	c.hbMu.Unlock()
@@ -445,20 +451,21 @@ func (c *Consumer) handleRebalanceSignal() {
 	}
 	defer atomic.StoreInt32(&c.rebalancing, 0)
 
+	util.Info("🔄 Rebalance started - Stop existing workers")
+
 	if c.metrics != nil {
 		c.metrics.RebalanceStart()
 	}
 
-	util.Info("🔄 Rebalance started - Stop existing workers")
 	c.mainCancel()
 
 	drainDone := make(chan struct{})
 	go func() {
-		maxTimeout := time.After(5 * time.Second)
+		maxTimeout := time.After(3 * time.Second)
 		for {
 			select {
 			case <-c.commitCh:
-			case <-time.After(200 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond):
 				close(drainDone)
 				return
 			case <-maxTimeout:
@@ -475,7 +482,7 @@ func (c *Consumer) handleRebalanceSignal() {
 	c.resetHeartbeatConn()
 	c.commitMu.Lock()
 	if c.commitConn != nil {
-		c.commitConn.Close()
+		_ = c.commitConn.Close()
 		c.commitConn = nil
 	}
 	c.commitMu.Unlock()
@@ -493,6 +500,14 @@ func (c *Consumer) handleRebalanceSignal() {
 	if err != nil {
 		util.Error("Rebalance join failed: %v", err)
 		return
+	}
+
+	if len(assignments) == 0 {
+		assignments, err = c.syncGroup(gen, mid)
+		if err != nil {
+			util.Error("❌ Rebalance sync failed: %v", err)
+			return
+		}
 	}
 
 	c.mu.Lock()
@@ -516,8 +531,6 @@ func (c *Consumer) handleRebalanceSignal() {
 		util.Info("✅ Partition %d assigned at offset %d (Generation: %d)", pid, offset, gen)
 	}
 	c.mu.Unlock()
-
-	c.startCommitWorker()
 
 	if c.config.Mode != config.ModePolling {
 		go c.startStreaming()
@@ -569,6 +582,8 @@ func (c *Consumer) startConsuming() {
 					case <-time.After(c.config.PollInterval):
 					case <-c.mainCtx.Done():
 						return
+					case <-c.doneCh:
+						return
 					}
 				}
 			}
@@ -584,41 +599,34 @@ func (c *Consumer) ownsPartition(pid int) bool {
 }
 
 func (c *Consumer) TriggerBenchmarkStop() {
-	c.closeMu.Lock()
-	defer c.closeMu.Unlock()
-
-	if c.closed {
+	if !atomic.CompareAndSwapInt32(&c.bmFinished, 0, 1) {
 		return
 	}
-
-	c.closed = true
 
 	if c.metrics != nil {
 		c.metrics.PrintSummary()
 	}
 
-	go c.Close()
+	go func() {
+		if err := c.Close(); err != nil {
+			util.Debug("failed to close consumer: %v", err)
+		}
+	}()
 }
 
 func (c *Consumer) joinGroup() (generation int64, memberID string, assignments []int, err error) {
-	if c.memberID != "" {
-		c.mu.RLock()
-		assignments = make([]int, 0, len(c.partitionConsumers))
-		for pid := range c.partitionConsumers {
-			assignments = append(assignments, pid)
-		}
-		c.mu.RUnlock()
-
-		return c.generation, c.memberID, assignments, nil
-	}
-
 	conn, err := c.getLeaderConn()
 	if err != nil {
 		return 0, "", nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	joinCmd := fmt.Sprintf("JOIN_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.config.ConsumerID)
+	mID := c.memberID
+	if mID == "" {
+		mID = c.config.ConsumerID
+	}
+
+	joinCmd := fmt.Sprintf("JOIN_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, mID)
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", joinCmd)); err != nil {
 		return 0, "", nil, fmt.Errorf("send join command: %w", err)
 	}
@@ -684,7 +692,7 @@ func (c *Consumer) syncGroup(generation int64, memberID string) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	syncCmd := fmt.Sprintf("SYNC_GROUP topic=%s group=%s member=%s generation=%d", c.config.Topic, c.config.GroupID, memberID, generation)
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", syncCmd)); err != nil {
@@ -733,7 +741,7 @@ func (c *Consumer) fetchOffset(partition int) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	fetchCmd := fmt.Sprintf("FETCH_OFFSET topic=%s partition=%d group=%s", c.config.Topic, partition, c.config.GroupID)
@@ -818,7 +826,7 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 		c.commitMu.Lock()
 		if c.commitConn == conn {
 			c.commitConn = nil
-			conn.Close()
+			_ = conn.Close()
 		}
 		c.commitMu.Unlock()
 		return false
@@ -828,7 +836,7 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 	if err != nil {
 		util.Error("Batch commit response read failed: %v", err)
 		c.commitMu.Lock()
-		conn.Close()
+		_ = conn.Close()
 		c.commitConn = nil
 		c.commitMu.Unlock()
 		return false
@@ -863,7 +871,7 @@ func (c *Consumer) directCommit(partition int, offset uint64) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d generation=%d member=%s",
 		c.config.Topic, partition, c.config.GroupID, offset, generation, memberID)
@@ -889,44 +897,56 @@ func (c *Consumer) directCommit(partition int, offset uint64) error {
 }
 
 func (c *Consumer) Close() error {
-	c.closeMu.Lock()
-	if c.closed {
-		c.closeMu.Unlock()
+	if !atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
 		return nil
 	}
-	c.closed = true
-	c.closeMu.Unlock()
 
 	close(c.doneCh)
 	c.mainCancel()
 
+	c.wg.Wait()
+	c.flushOffsets()
+
+	close(c.commitCh)
 	c.resetHeartbeatConn()
 
 	if c.memberID != "" {
 		if conn, err := c.getLeaderConn(); err == nil {
 			leaveCmd := fmt.Sprintf("LEAVE_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.memberID)
 			_ = util.WriteWithLength(conn, util.EncodeMessage("", leaveCmd))
-			conn.Close()
+			_ = conn.Close()
 		}
 	}
+
+	c.commitMu.Lock()
+	if c.commitConn != nil {
+		if err := c.commitConn.Close(); err != nil {
+			util.Debug("failed to close commit connection during shutdown: %v", err)
+		}
+		c.commitConn = nil
+	}
+	c.commitMu.Unlock()
 
 	c.mu.Lock()
 	for _, pc := range c.partitionConsumers {
 		pc.mu.Lock()
 		pc.closed = true
 		if pc.conn != nil {
-			pc.conn.Close()
+			if err := pc.conn.Close(); err != nil {
+				util.Debug("failed to close connection: %v", err)
+			}
+			pc.conn = nil
 		}
 		pc.mu.Unlock()
 	}
+	c.partitionConsumers = make(map[int]*PartitionConsumer)
 	c.mu.Unlock()
 
-	c.wg.Wait()
 	return nil
 }
 
 func (c *Consumer) cleanupHbConn(badConn net.Conn) {
-	badConn.Close()
+	_ = badConn.Close()
 	c.hbMu.Lock()
 	if c.hbConn == badConn {
 		c.hbConn = nil

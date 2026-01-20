@@ -13,7 +13,9 @@ import (
 
 func (d *DiskHandler) openSegment() error {
 	flags := os.O_CREATE | os.O_RDWR | os.O_APPEND
-	f, err := os.OpenFile(fmt.Sprintf("%s_segment_%d.log", d.BaseName, d.CurrentSegment), flags, 0644)
+	filePath := d.GetSegmentPath(d.CurrentSegment)
+
+	f, err := os.OpenFile(filePath, flags, 0644)
 	if err != nil {
 		return err
 	}

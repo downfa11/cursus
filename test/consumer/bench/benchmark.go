@@ -110,8 +110,8 @@ type ConsumerMetrics struct {
 func NewConsumerMetrics(expected int64, enableCorrectness bool) *ConsumerMetrics {
 	var offsetBF, idBF *BloomFilter
 	if enableCorrectness {
-		offsetBF = NewBloomFilter(uint64(expected), 0.001)
-		idBF = NewBloomFilter(uint64(expected), 0.001)
+		offsetBF = NewBloomFilter(uint64(expected), 0.0001)
+		idBF = NewBloomFilter(uint64(expected), 0.0001)
 	}
 
 	return &ConsumerMetrics{
@@ -158,10 +158,11 @@ func (m *ConsumerMetrics) RecordMessage(partition int, offset int64, producerID 
 		return
 	}
 
-	offsetKey := encodeOffset(partition, offset)
-	isDuplicate := m.seenOffsetFilter.Add(offsetKey)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	if isDuplicate {
+	offsetKey := encodeOffset(partition, offset)
+	if m.seenOffsetFilter.Add(offsetKey) {
 		atomic.AddInt64(&m.dupOffsetCount, 1)
 		util.Debug("duplicated offset. (partition: %d, offset: %d)", partition, offset)
 	}
@@ -224,9 +225,9 @@ func (m *ConsumerMetrics) Finalize() {
 	unique := atomic.LoadInt64(&m.uniqueMsgs)
 
 	if consumed < m.expectedTotal {
-		m.missingCount = m.expectedTotal - consumed
+		atomic.StoreInt64(&m.missingCount, m.expectedTotal-consumed)
 	} else {
-		m.missingCount = 0
+		atomic.StoreInt64(&m.missingCount, 0)
 	}
 
 	if m.enableCorrectness && unique < m.expectedTotal && consumed >= m.expectedTotal {
@@ -250,29 +251,29 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 	elapsed := time.Since(m.startTime).Seconds()
 	total := atomic.LoadInt64(&m.totalMsgs)
 
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, sep)
-	fmt.Fprintln(w, "📊 CONSUMER BENCHMARK SUMMARY")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, sep)
+	_, _ = fmt.Fprintln(w, "📊 CONSUMER BENCHMARK SUMMARY")
 
-	fmt.Fprintf(w, "Total Messages       : %d\n", total)
-	fmt.Fprintf(w, "Elapsed Time         : %.2fs\n", elapsed)
+	_, _ = fmt.Fprintf(w, "Total Messages       : %d\n", total)
+	_, _ = fmt.Fprintf(w, "Elapsed Time         : %.2fs\n", elapsed)
 
 	overallTPS := 0.0
 	if elapsed > 0 {
 		overallTPS = float64(total) / elapsed
 	}
-	fmt.Fprintf(w, "Overall TPS          : %.2f msg/s\n", overallTPS)
+	_, _ = fmt.Fprintf(w, "Overall TPS          : %.2f msg/s\n", overallTPS)
 
 	if m.enableCorrectness {
-		fmt.Fprintf(w, "Duplicate (MessageID) : %d (fp possible)\n", m.dupCount)
-		fmt.Fprintf(w, "Duplicate (Offset)    : %d (fp possible)\n", m.dupOffsetCount)
-		fmt.Fprintf(w, "Message missing       : %d\n", m.missingCount)
+		_, _ = fmt.Fprintf(w, "Duplicate (MessageID) : %d (fp possible)\n", atomic.LoadInt64(&m.dupCount))
+		_, _ = fmt.Fprintf(w, "Duplicate (Offset)    : %d (fp possible)\n", atomic.LoadInt64(&m.dupOffsetCount))
+		_, _ = fmt.Fprintf(w, "Message missing       : %d\n", atomic.LoadInt64(&m.missingCount))
 	} else {
-		fmt.Fprintf(w, "Correctness Check     : disabled (no Bloom filter)\n")
+		_, _ = fmt.Fprintf(w, "Correctness Check     : disabled (no Bloom filter)\n")
 	}
 
 	if m.rebalance != nil && !m.rebalance.End.IsZero() {
-		fmt.Fprintf(w, "Rebalancing Cost      : %d ms\n", m.rebalance.End.Sub(m.rebalance.Start).Milliseconds())
+		_, _ = fmt.Fprintf(w, "Rebalancing Cost      : %d ms\n", m.rebalance.End.Sub(m.rebalance.Start).Milliseconds())
 	}
 
 	var phaseKeys []string
@@ -298,19 +299,19 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 
 		sort.Float64s(partitionTPS)
 
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "▶ Phase: %s\n", phase)
-		fmt.Fprintf(w, "  Phase Total TPS       : %.2f\n", pm.TPS())
-		fmt.Fprintf(w, "  p95 Partition Avg TPS : %.2f\n", percentile(partitionTPS, 0.95))
-		fmt.Fprintf(w, "  p99 Partition Avg TPS : %.2f\n", percentile(partitionTPS, 0.99))
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "▶ Phase: %s\n", phase)
+		_, _ = fmt.Fprintf(w, "  Phase Total TPS       : %.2f\n", pm.TPS())
+		_, _ = fmt.Fprintf(w, "  p95 Partition Avg TPS : %.2f\n", percentile(partitionTPS, 0.95))
+		_, _ = fmt.Fprintf(w, "  p99 Partition Avg TPS : %.2f\n", percentile(partitionTPS, 0.99))
 
 		for _, id := range pIDs {
 			p := pm.partitions[id]
-			fmt.Fprintf(w, "    #%-2d total=%-8d avgTPS=%.1f\n", p.ID, atomic.LoadInt64(&p.totalMsgs), p.TPS())
+			_, _ = fmt.Fprintf(w, "    #%-2d total=%-8d avgTPS=%.1f\n", p.ID, atomic.LoadInt64(&p.totalMsgs), p.TPS())
 		}
 	}
 
-	fmt.Fprintln(w, sep)
+	_, _ = fmt.Fprintln(w, sep)
 }
 
 func (m *ConsumerMetrics) PrintSummary() {

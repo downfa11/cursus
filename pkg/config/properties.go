@@ -27,37 +27,34 @@ type Config struct {
 	ExporterPort    int           `yaml:"exporter_port" json:"exporter.port"`
 	LogLevel        util.LogLevel `yaml:"log_level" json:"log_level"`
 
-	LogDir             string `yaml:"log_dir" json:"log.dir"`
-	DiskFlushBatchSize int    `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
-	LingerMS           int    `yaml:"linger_ms" json:"linger.ms"`
-	ChannelBufferSize  int    `yaml:"channel_buffer_size" json:"channel.buffer.size"`
-	DiskWriteTimeoutMS int    `yaml:"disk_write_timeout_ms" json:"disk.write.timeout.ms"`
-	SegmentSize        int    `yaml:"segment_size" json:"segment.size"`
-	SegmentRollTimeMS  int    `yaml:"segment_roll_time_ms" json:"segment.roll.time.ms"`
+	// disk storage
+	LogDir              string `yaml:"log_dir" json:"log.dir"`
+	DiskFlushBatchSize  int    `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
+	DiskFlushIntervalMS int    `yaml:"disk_flush_interval_ms" json:"disk.flush.interval.ms"`
+	DiskWriteTimeoutMS  int    `yaml:"disk_write_timeout_ms" json:"disk.write.timeout.ms"`
+	LingerMS            int    `yaml:"linger_ms" json:"linger.ms"`
+	CompressionType     string `yaml:"compression_type" json:"compression.type"` // "none", "gzip", "snappy", "lz4"
 
+	// log segment
+	CleanupInterval           int     `yaml:"log_cleanup_interval" json:"log.cleanup.interval"`
+	SegmentSize               uint64  `yaml:"log_segment_bytes" json:"log.segment.bytes"`
+	SegmentRollTimeMS         int     `yaml:"log_segment_roll_ms" json:"log.segment.roll.ms"`
+	IndexSize                 uint64  `yaml:"log_index_size_bytes" json:"log.index.size.bytes"`
+	IndexIntervalBytes        int     `yaml:"log_index_interval_bytes" json:"log.index.interval.bytes"`
+	CleanupPolicy             string  `yaml:"log_cleanup_policy" json:"log.cleanup.policy"` // delete, compact
+	RetentionHours            int     `yaml:"log_retention_hours" json:"log.retention.hours"`
+	RetentionBytes            int64   `yaml:"log_retention_bytes" json:"log.retention.bytes"`
+	RetentionCheckIntervalMS  int     `yaml:"log_retention_check_interval_ms" json:"log.retention.check.interval.ms"`
+	CompactionCheckIntervalMS int     `yaml:"log_compaction_check_interval_ms" json:"log.compaction.check.interval.ms"`
+	MinCleanableDirtyRatio    float64 `yaml:"log_min_cleanable_dirty_ratio" json:"log.min.cleanable.dirty.ratio"`
+
+	// internal channels
+	ChannelBufferSize          int `yaml:"channel_buffer_size" json:"channel.buffer.size"`
 	PartitionChannelBufSize    int `yaml:"partition_channel_buffer_size" json:"partition.channel.buffer.size"`
 	ConsumerChannelBufSize     int `yaml:"consumer_channel_buffer_size" json:"consumer.channel.buffer.size"`
 	BroadcastChannelBufferSize int `yaml:"broadcast_channel_buffer_size" json:"broadcast.channel.buffer.size"`
 
-	ConsumerSessionTimeoutMS int `yaml:"consumer_session_timeout_ms" json:"consumer.session.timeout.ms"`
-	ConsumerHeartbeatCheckMS int `yaml:"consumer_heartbeat_check_ms" json:"consumer.heartbeat.check.ms"`
-
-	CleanupInterval      int                   `yaml:"cleanup_interval" json:"cleanup.interval"`
-	StaticConsumerGroups []ConsumerGroupConfig `yaml:"static_consumer_groups" json:"static_consumer_groups"`
-
-	MaxStreamConnections    int           `yaml:"max_stream_connections" json:"max.stream.connections"`
-	StreamTimeout           time.Duration `yaml:"stream_timeout" json:"stream.timeout"`
-	StreamHeartbeatInterval time.Duration `yaml:"stream_heartbeat_interval" json:"stream.heartbeat.interval"`
-	StreamCommitInterval    time.Duration `yaml:"stream_commit_interval" json:"stream.commit.interval"`
-
-	UseTLS      bool `yaml:"use_tls" json:"tls.enable"`
-	TLSCert     tls.Certificate
-	TLSCertPath string `yaml:"tls_cert_path" json:"tls.cert_path"`
-	TLSKeyPath  string `yaml:"tls_key_path" json:"tls.key_path"`
-
-	CompressionType string `yaml:"compression_type" json:"compression.type"` // "none", "gzip", "snappy", "lz4"
-
-	// cluster Options
+	// distributed cluster
 	EnabledDistribution  bool     `yaml:"enabled_distribution" json:"distribution.enabled"`
 	RaftPort             int      `yaml:"raft_port" json:"distribution.raft.port"`
 	DiscoveryPort        int      `yaml:"discovery_port" json:"distribution.discovery.port"`
@@ -66,41 +63,79 @@ type Config struct {
 	BootstrapCluster     bool     `yaml:"bootstrap_cluster" json:"distribution.bootstrap"`
 	AdvertisedHost       string   `yaml:"advertised_host" json:"distribution.advertised_host"`
 	MinInSyncReplicas    int      `yaml:"min_insync_replicas" json:"min.insync.replicas"`
+
+	// consumer
+	ConsumerSessionTimeoutMS int                   `yaml:"consumer_session_timeout_ms" json:"consumer.session.timeout.ms"`
+	ConsumerHeartbeatCheckMS int                   `yaml:"consumer_heartbeat_check_ms" json:"consumer.heartbeat.check.ms"`
+	StaticConsumerGroups     []ConsumerGroupConfig `yaml:"static_consumer_groups" json:"static_consumer_groups"`
+
+	// stream
+	MaxStreamConnections    int           `yaml:"max_stream_connections" json:"max.stream.connections"`
+	StreamTimeout           time.Duration `yaml:"stream_timeout" json:"stream.timeout"`
+	StreamHeartbeatInterval time.Duration `yaml:"stream_heartbeat_interval" json:"stream.heartbeat.interval"`
+	StreamCommitInterval    time.Duration `yaml:"stream_commit_interval" json:"stream.commit.interval"`
+
+	// security
+	UseTLS      bool `yaml:"use_tls" json:"tls.enable"`
+	TLSCert     tls.Certificate
+	TLSCertPath string `yaml:"tls_cert_path" json:"tls.cert_path"`
+	TLSKeyPath  string `yaml:"tls_key_path" json:"tls.key_path"`
 }
 
 func defaultConfig() *Config {
 	return &Config{
-		BrokerPort:                 9000,
-		HealthCheckPort:            9080,
-		EnableExporter:             true,
-		ExporterPort:               9100,
-		LogLevel:                   util.LogLevelInfo,
-		LogDir:                     "broker-logs",
-		DiskFlushBatchSize:         50,
-		LingerMS:                   50,
+		BrokerPort:      9000,
+		HealthCheckPort: 9080,
+		EnableExporter:  true,
+		ExporterPort:    9100,
+		LogLevel:        util.LogLevelInfo,
+
+		// disk storage
+		LogDir:              "broker-logs",
+		DiskFlushBatchSize:  50,
+		DiskFlushIntervalMS: 500,
+		DiskWriteTimeoutMS:  10,
+		LingerMS:            50,
+		CompressionType:     "none",
+
+		// log segment & retention
+		CleanupInterval:           300,
+		SegmentSize:               1 * 1024 * 1024 * 1024,  // 1GB
+		SegmentRollTimeMS:         7 * 24 * 60 * 60 * 1000, // 7day
+		IndexSize:                 10 * 1024 * 1024,        // 10MB
+		IndexIntervalBytes:        4096,
+		CleanupPolicy:             "delete", // delete, compact
+		RetentionHours:            168,
+		RetentionBytes:            -1,
+		RetentionCheckIntervalMS:  300000,
+		CompactionCheckIntervalMS: 300000,
+		MinCleanableDirtyRatio:    0.5,
+
+		// internal channels
 		ChannelBufferSize:          1024,
-		DiskWriteTimeoutMS:         10,
-		SegmentSize:                1 << 20,
-		SegmentRollTimeMS:          0,
 		PartitionChannelBufSize:    10000,
 		ConsumerChannelBufSize:     1000,
 		BroadcastChannelBufferSize: 10000,
-		ConsumerSessionTimeoutMS:   10000,
-		ConsumerHeartbeatCheckMS:   5000,
-		CleanupInterval:            300,
-		MaxStreamConnections:       1000,
-		StreamTimeout:              30 * time.Minute,
-		StreamHeartbeatInterval:    3 * time.Second,
-		StreamCommitInterval:       5 * time.Second,
-		CompressionType:            "none",
-		EnabledDistribution:        false,
-		RaftPort:                   9001,
-		DiscoveryPort:              8000,
-		RaftPeers:                  []string{},
-		StaticClusterMembers:       []string{},
-		BootstrapCluster:           false,
-		AdvertisedHost:             "localhost",
-		MinInSyncReplicas:          2,
+
+		// distributed cluster
+		EnabledDistribution:  false,
+		RaftPort:             9001,
+		DiscoveryPort:        8000,
+		RaftPeers:            []string{},
+		StaticClusterMembers: []string{},
+		BootstrapCluster:     false,
+		AdvertisedHost:       "localhost",
+		MinInSyncReplicas:    2,
+
+		// consumer
+		ConsumerSessionTimeoutMS: 10000,
+		ConsumerHeartbeatCheckMS: 5000,
+
+		// stream
+		MaxStreamConnections:    1000,
+		StreamTimeout:           30 * time.Minute,
+		StreamHeartbeatInterval: 3 * time.Second,
+		StreamCommitInterval:    5 * time.Second,
 	}
 }
 
@@ -110,46 +145,62 @@ func LoadConfig() (*Config, error) {
 
 	flag.IntVar(&cfg.BrokerPort, "port", cfg.BrokerPort, "Broker port")
 	flag.IntVar(&cfg.HealthCheckPort, "health-port", cfg.HealthCheckPort, "Health port")
-	flag.StringVar(&cfg.LogDir, "log-dir", cfg.LogDir, "Log directory")
 	flag.BoolVar(&cfg.EnableExporter, "exporter", cfg.EnableExporter, "Enable exporter")
 	flag.IntVar(&cfg.ExporterPort, "exporter-port", cfg.ExporterPort, "Exporter port")
-
 	logLevelStr := flag.String("log-level", "info", "Log level")
 
-	flag.IntVar(&cfg.CleanupInterval, "cleanup-interval", cfg.CleanupInterval, "Cleanup seconds")
-
+	// disk storage
+	flag.StringVar(&cfg.LogDir, "log-dir", cfg.LogDir, "Log directory")
 	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", cfg.DiskFlushBatchSize, "Disk flush batch")
-	flag.IntVar(&cfg.LingerMS, "linger-ms", cfg.LingerMS, "Linger ms")
-	flag.IntVar(&cfg.ChannelBufferSize, "channel-buffer", cfg.ChannelBufferSize, "Channel buffer")
+	flag.IntVar(&cfg.DiskFlushIntervalMS, "disk-flush-interval-ms", cfg.DiskFlushIntervalMS, "Disk sync interval in milliseconds")
 	flag.IntVar(&cfg.DiskWriteTimeoutMS, "disk-write-timeout", cfg.DiskWriteTimeoutMS, "Disk write timeout")
-	flag.IntVar(&cfg.SegmentSize, "segment-size", cfg.SegmentSize, "Segment size")
-	flag.IntVar(&cfg.SegmentRollTimeMS, "segment-roll-time-ms", cfg.SegmentRollTimeMS, "Segment roll time")
+	flag.IntVar(&cfg.LingerMS, "linger-ms", cfg.LingerMS, "Linger ms")
+	flag.StringVar(&cfg.CompressionType, "compression-type", "none", "Compression type (none, gzip, snappy, lz4)")
 
+	// log segment & retention
+	flag.IntVar(&cfg.CleanupInterval, "cleanup-interval", cfg.CleanupInterval, "Cleanup seconds")
+	var segmentSizeInt64 int64
+	flag.Int64Var(&segmentSizeInt64, "segment-size", int64(cfg.SegmentSize), "Segment size")
+	flag.IntVar(&cfg.SegmentRollTimeMS, "segment-roll-time-ms", cfg.SegmentRollTimeMS, "Segment roll time")
+	var indexSizeInt64 int64
+	flag.Int64Var(&indexSizeInt64, "index-size", int64(cfg.IndexSize), "Max index file size")
+	flag.IntVar(&cfg.IndexIntervalBytes, "index-interval-bytes", cfg.IndexIntervalBytes, "Index interval bytes")
+	flag.StringVar(&cfg.CleanupPolicy, "cleanup-policy", cfg.CleanupPolicy, "Cleanup policy (delete/compact)")
+	flag.IntVar(&cfg.RetentionHours, "retention-hours", cfg.RetentionHours, "Retention hours")
+	flag.Int64Var(&cfg.RetentionBytes, "retention-bytes", cfg.RetentionBytes, "Retention bytes")
+	flag.IntVar(&cfg.RetentionCheckIntervalMS, "retention-check-interval", cfg.RetentionCheckIntervalMS, "Retention check interval")
+	flag.IntVar(&cfg.CompactionCheckIntervalMS, "compaction-check-interval", cfg.CompactionCheckIntervalMS, "Compaction check interval ms")
+	flag.Float64Var(&cfg.MinCleanableDirtyRatio, "min-cleanable-dirty-ratio", cfg.MinCleanableDirtyRatio, "Min cleanable dirty ratio (0.1 ~ 0.9)")
+
+	// internal channels
+	flag.IntVar(&cfg.ChannelBufferSize, "channel-buffer", cfg.ChannelBufferSize, "Channel buffer")
 	flag.IntVar(&cfg.PartitionChannelBufSize, "partition-ch-buffer", cfg.PartitionChannelBufSize, "Partition buffer")
 	flag.IntVar(&cfg.ConsumerChannelBufSize, "consumer-ch-buffer", cfg.ConsumerChannelBufSize, "Consumer buffer")
 	flag.IntVar(&cfg.BroadcastChannelBufferSize, "broadcast-ch-buffer", cfg.BroadcastChannelBufferSize, "Broadcast channel buffer size")
 
+	// distributed cluster
+	flag.BoolVar(&cfg.EnabledDistribution, "enable-distribution", cfg.EnabledDistribution, "Enable distributed clustering")
+	flag.IntVar(&cfg.RaftPort, "raft-port", cfg.RaftPort, "Raft port for replication")
+	flag.IntVar(&cfg.DiscoveryPort, "discovery-port", cfg.DiscoveryPort, "Discovery service port")
+	raftPeersFlag := flag.String("raft-peers", "", "Raft peer addresses (comma-separated)")
+	flag.BoolVar(&cfg.BootstrapCluster, "bootstrap-cluster", cfg.BootstrapCluster, "Bootstrap Raft cluster")
+	flag.StringVar(&cfg.AdvertisedHost, "advertised-host", cfg.AdvertisedHost, "Advertised host for discovery")
+	flag.IntVar(&cfg.MinInSyncReplicas, "min-insync-replicas", cfg.MinInSyncReplicas, "Minimum in-sync replicas for writes")
+
+	// consumer
 	flag.IntVar(&cfg.ConsumerSessionTimeoutMS, "consumer-session-timeout", cfg.ConsumerSessionTimeoutMS, "Session timeout")
 	flag.IntVar(&cfg.ConsumerHeartbeatCheckMS, "consumer-heartbeat-check", cfg.ConsumerHeartbeatCheckMS, "Heartbeat check")
 
-	flag.BoolVar(&cfg.UseTLS, "tls", cfg.UseTLS, "Enable TLS")
-	flag.StringVar(&cfg.TLSCertPath, "tls-cert", cfg.TLSCertPath, "TLS cert")
-	flag.StringVar(&cfg.TLSKeyPath, "tls-key", cfg.TLSKeyPath, "TLS key")
-
-	flag.StringVar(&cfg.CompressionType, "compression-type", "none", "Compression type (none, gzip, snappy, lz4)")
-
+	// stream
 	flag.IntVar(&cfg.MaxStreamConnections, "max-stream-connections", cfg.MaxStreamConnections, "Max stream connections")
 	flag.DurationVar(&cfg.StreamTimeout, "stream-timeout", cfg.StreamTimeout, "Stream timeout")
 	flag.DurationVar(&cfg.StreamHeartbeatInterval, "stream-heartbeat-interval", cfg.StreamHeartbeatInterval, "Stream heartbeat")
 	flag.DurationVar(&cfg.StreamCommitInterval, "stream-commit-interval", cfg.StreamCommitInterval, "Stream commit interval")
 
-	flag.BoolVar(&cfg.EnabledDistribution, "enable-distribution", cfg.EnabledDistribution, "Enable distributed clustering")
-	flag.StringVar(&cfg.AdvertisedHost, "advertised-host", cfg.AdvertisedHost, "Advertised host for discovery")
-	flag.IntVar(&cfg.RaftPort, "raft-port", cfg.RaftPort, "Raft port for replication")
-	flag.IntVar(&cfg.DiscoveryPort, "discovery-port", cfg.DiscoveryPort, "Discovery service port")
-	raftPeersFlag := flag.String("raft-peers", "", "Raft peer addresses (comma-separated)")
-	flag.BoolVar(&cfg.BootstrapCluster, "bootstrap-cluster", cfg.BootstrapCluster, "Bootstrap Raft cluster")
-	flag.IntVar(&cfg.MinInSyncReplicas, "min-insync-replicas", cfg.MinInSyncReplicas, "Minimum in-sync replicas for writes")
+	// security
+	flag.BoolVar(&cfg.UseTLS, "tls", cfg.UseTLS, "Enable TLS")
+	flag.StringVar(&cfg.TLSCertPath, "tls-cert", cfg.TLSCertPath, "TLS cert")
+	flag.StringVar(&cfg.TLSKeyPath, "tls-key", cfg.TLSKeyPath, "TLS key")
 
 	flag.Parse()
 
@@ -173,17 +224,18 @@ func LoadConfig() (*Config, error) {
 		if err != nil {
 			if os.IsNotExist(err) {
 				util.Warn("Config file %s not found, using flag defaults", *configPath)
-				return cfg, nil
-			}
-			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
-		}
-		if strings.HasSuffix(*configPath, ".json") {
-			if err := json.Unmarshal(data, cfg); err != nil {
-				return nil, err
+			} else {
+				return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 			}
 		} else {
-			if err := yaml.Unmarshal(data, cfg); err != nil {
-				return nil, err
+			if strings.HasSuffix(*configPath, ".json") {
+				if err := json.Unmarshal(data, cfg); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := yaml.Unmarshal(data, cfg); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -192,30 +244,46 @@ func LoadConfig() (*Config, error) {
 		parts := strings.Split(*raftPeersFlag, ",")
 		cfg.RaftPeers = make([]string, 0, len(parts))
 		for _, s := range parts {
-			s = strings.TrimSpace(s)
-			if s != "" {
+			if s = strings.TrimSpace(s); s != "" {
 				cfg.RaftPeers = append(cfg.RaftPeers, s)
 			}
 		}
 	}
 
+	if segmentSizeInt64 <= 0 {
+		cfg.SegmentSize = defaultConfig().SegmentSize
+	} else {
+		cfg.SegmentSize = uint64(segmentSizeInt64)
+	}
+	if indexSizeInt64 <= 0 {
+		cfg.IndexSize = defaultConfig().IndexSize
+	} else {
+		cfg.IndexSize = uint64(indexSizeInt64)
+	}
+
 	overrideEnvInt(&cfg.BrokerPort, "BROKER_PORT")
 	overrideEnvInt(&cfg.HealthCheckPort, "HEALTH_CHECK_PORT")
-
 	overrideEnvBool(&cfg.EnableExporter, "ENABLE_EXPORTER")
 	overrideEnvInt(&cfg.ExporterPort, "EXPORTER_PORT")
 
 	overrideEnvInt(&cfg.DiskFlushBatchSize, "DISK_FLUSH_BATCH")
+	overrideEnvInt(&cfg.DiskFlushIntervalMS, "DISK_FLUSH_INTERVAL_MS")
 	overrideEnvInt(&cfg.LingerMS, "LINGER_MS")
+	overrideEnvString(&cfg.CompressionType, "COMPRESSION_TYPE")
+
+	overrideEnvUint64(&cfg.SegmentSize, "LOG_SEGMENT_BYTES")
+	overrideEnvUint64(&cfg.IndexSize, "LOG_INDEX_SIZE_BYTES")
+	overrideEnvInt(&cfg.IndexIntervalBytes, "LOG_INDEX_INTERVAL_BYTES")
+	overrideEnvString(&cfg.CleanupPolicy, "LOG_CLEANUP_POLICY")
+	overrideEnvInt(&cfg.RetentionHours, "LOG_RETENTION_HOURS")
+	overrideEnvInt64(&cfg.RetentionBytes, "LOG_RETENTION_BYTES")
+	overrideEnvInt(&cfg.RetentionCheckIntervalMS, "LOG_RETENTION_CHECK_INTERVAL_MS")
+	overrideEnvInt(&cfg.CompactionCheckIntervalMS, "LOG_COMPACTION_CHECK_INTERVAL_MS")
+	overrideEnvFloat64(&cfg.MinCleanableDirtyRatio, "LOG_MIN_CLEANABLE_DIRTY_RATIO")
 
 	overrideEnvInt(&cfg.PartitionChannelBufSize, "PARTITION_CH_BUFFER")
 	overrideEnvInt(&cfg.ConsumerChannelBufSize, "CONSUMER_CH_BUFFER")
 	overrideEnvInt(&cfg.BroadcastChannelBufferSize, "BROADCAST_CH_BUFFER")
-
-	overrideEnvInt(&cfg.ConsumerSessionTimeoutMS, "CONSUMER_SESSION_TIMEOUT")
-	overrideEnvInt(&cfg.ConsumerHeartbeatCheckMS, "CONSUMER_HEARTBEAT_CHECK")
-
-	overrideEnvString(&cfg.CompressionType, "COMPRESSION_TYPE")
 
 	overrideEnvBool(&cfg.EnabledDistribution, "ENABLE_DISTRIBUTION")
 	overrideEnvString(&cfg.AdvertisedHost, "ADVERTISED_HOST")
@@ -224,6 +292,9 @@ func LoadConfig() (*Config, error) {
 	overrideEnvStringSlice(&cfg.RaftPeers, "RAFT_PEERS")
 	overrideEnvBool(&cfg.BootstrapCluster, "BOOTSTRAP_CLUSTER")
 	overrideEnvInt(&cfg.MinInSyncReplicas, "MIN_INSYNC_REPLICAS")
+
+	overrideEnvInt(&cfg.ConsumerSessionTimeoutMS, "CONSUMER_SESSION_TIMEOUT")
+	overrideEnvInt(&cfg.ConsumerHeartbeatCheckMS, "CONSUMER_HEARTBEAT_CHECK")
 
 	cfg.Normalize()
 	util.SetLevel(cfg.LogLevel)
@@ -240,146 +311,4 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return cfg, nil
-}
-
-func overrideEnvInt(target *int, key string) {
-	if v := os.Getenv(key); v != "" {
-		*target = util.ParseInt(v, *target)
-	}
-}
-
-func overrideEnvBool(target *bool, key string) {
-	if v := os.Getenv(key); v != "" {
-		*target = util.ParseBool(v, *target)
-	}
-}
-
-func overrideEnvString(target *string, key string) {
-	if v := os.Getenv(key); v != "" {
-		*target = v
-	}
-}
-
-func overrideEnvStringSlice(target *[]string, key string) {
-	if v := os.Getenv(key); v != "" {
-		parts := strings.Split(v, ",")
-		result := make([]string, 0, len(parts))
-		for _, s := range parts {
-			s = strings.TrimSpace(s)
-			if s != "" {
-				result = append(result, s)
-			}
-		}
-		*target = result
-	}
-}
-
-func (cfg *Config) Normalize() {
-	if cfg.BrokerPort <= 0 {
-		cfg.BrokerPort = 9000
-	}
-	if cfg.HealthCheckPort <= 0 {
-		cfg.HealthCheckPort = 9080
-	}
-	if strings.TrimSpace(cfg.LogDir) == "" {
-		cfg.LogDir = "broker-logs"
-	}
-	if cfg.ExporterPort <= 0 {
-		cfg.ExporterPort = 9100
-	}
-	if cfg.CompressionType == "" {
-		cfg.CompressionType = "none"
-	}
-	switch cfg.CompressionType {
-	case "none", "gzip", "snappy", "lz4":
-	default:
-		util.Warn("Invalid compression_type '%s', defaulting to 'none'", cfg.CompressionType)
-		cfg.CompressionType = "none"
-	}
-	if cfg.CleanupInterval <= 0 {
-		cfg.CleanupInterval = 300
-	}
-	if cfg.DiskFlushBatchSize <= 0 {
-		cfg.DiskFlushBatchSize = 50
-	}
-	if cfg.LingerMS < 0 {
-		cfg.LingerMS = 0
-	}
-	if cfg.ChannelBufferSize <= 0 {
-		cfg.ChannelBufferSize = 1024
-	}
-	if cfg.DiskWriteTimeoutMS <= 0 {
-		cfg.DiskWriteTimeoutMS = 10
-	}
-	if cfg.SegmentSize < 1024 {
-		cfg.SegmentSize = 1 << 20
-	}
-	if cfg.SegmentRollTimeMS < 0 {
-		cfg.SegmentRollTimeMS = 0
-	}
-	if cfg.PartitionChannelBufSize <= 0 {
-		cfg.PartitionChannelBufSize = 10000
-	}
-	if cfg.ConsumerChannelBufSize <= 0 {
-		cfg.ConsumerChannelBufSize = 1000
-	}
-	if cfg.BroadcastChannelBufferSize <= 0 {
-		cfg.BroadcastChannelBufferSize = 10000
-	}
-
-	for i := range cfg.StaticConsumerGroups {
-		g := &cfg.StaticConsumerGroups[i]
-		if strings.TrimSpace(g.Name) == "" {
-			g.Name = "default-group"
-		}
-		if g.ConsumerCount <= 0 {
-			g.ConsumerCount = 1
-		}
-		if len(g.Topics) == 0 {
-			g.Topics = []string{"default-topic"}
-		}
-		if g.TopicPartitions == nil {
-			g.TopicPartitions = map[string]int{}
-		}
-		for _, t := range g.Topics {
-			if g.TopicPartitions[t] <= 0 {
-				g.TopicPartitions[t] = 1
-			}
-		}
-	}
-
-	if cfg.ConsumerSessionTimeoutMS <= 0 {
-		cfg.ConsumerSessionTimeoutMS = 10000
-	}
-	if cfg.ConsumerHeartbeatCheckMS <= 0 {
-		cfg.ConsumerHeartbeatCheckMS = 5000
-	}
-	if cfg.ConsumerHeartbeatCheckMS >= cfg.ConsumerSessionTimeoutMS {
-		cfg.ConsumerHeartbeatCheckMS = cfg.ConsumerSessionTimeoutMS / 2
-	}
-
-	if cfg.MaxStreamConnections <= 0 {
-		cfg.MaxStreamConnections = 1000
-	}
-	if cfg.StreamTimeout <= 0 {
-		cfg.StreamTimeout = 30 * time.Minute
-	}
-	if cfg.StreamHeartbeatInterval <= 0 {
-		cfg.StreamHeartbeatInterval = 3 * time.Second
-	}
-	if cfg.StreamCommitInterval <= 0 {
-		cfg.StreamCommitInterval = 5 * time.Second
-	}
-	if cfg.RaftPort <= 0 {
-		cfg.RaftPort = 9001
-	}
-	if cfg.DiscoveryPort <= 0 {
-		cfg.DiscoveryPort = 8000
-	}
-	if strings.TrimSpace(cfg.AdvertisedHost) == "" {
-		cfg.AdvertisedHost = "localhost"
-	}
-	if cfg.MinInSyncReplicas <= 0 {
-		cfg.MinInSyncReplicas = 2
-	}
 }

@@ -49,8 +49,9 @@ type ConsumerConfig struct {
 	EnableAutoCommit   bool          `yaml:"enable_auto_commit" json:"enable_auto_commit"`
 	AutoCommitInterval time.Duration `yaml:"auto_commit_interval" json:"auto_commit_interval"`
 
-	MaxCommitRetries   int           `yaml:"max_commit_retries" json:"max_commit_retries"`
-	CommitRetryBackoff time.Duration `yaml:"commit_retry_backoff" json:"commit_retry_backoff"`
+	MaxCommitRetries      int           `yaml:"max_commit_retries" json:"max_commit_retries"`
+	CommitRetryBackoff    time.Duration `yaml:"commit_retry_backoff" json:"commit_retry_backoff"`
+	CommitRetryMaxBackoff time.Duration `yaml:"commit_retry_max_backoff" json:"commit_retry_max_backoff"`
 
 	StreamingCommitInterval  time.Duration `yaml:"streaming_commit_interval" json:"streaming_commit_interval"`
 	EnableImmediateCommit    bool          `yaml:"enable_immediate_commit" json:"enable_immediate_commit"`
@@ -63,7 +64,7 @@ type ConsumerConfig struct {
 	LogLevel util.LogLevel `yaml:"log_level" json:"log_level"`
 }
 
-func LoadConfig() (*ConsumerConfig, error) {
+func LoadConsumerConfig(explicitPath string) (*ConsumerConfig, error) {
 	cfg := &ConsumerConfig{}
 
 	flag.Func("broker-addr", "Comma-separated broker addresses", func(val string) error {
@@ -95,6 +96,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 
 	flag.IntVar(&cfg.MaxCommitRetries, "max-commit-retries", 5, "Max retries for offset commit")
 	flag.DurationVar(&cfg.CommitRetryBackoff, "commit-retry-backoff", 500*time.Millisecond, "Backoff time between commit retries")
+	flag.DurationVar(&cfg.CommitRetryMaxBackoff, "commit-retry-max-backoff", 2*time.Second, "Max backoff time for commit retries")
 
 	flag.DurationVar(&cfg.LeaderStaleness, "leader-staleness", 30*time.Second, "Maximum age of leader info before considering it stale (e.g., 30s, 1m)")
 
@@ -125,16 +127,21 @@ func LoadConfig() (*ConsumerConfig, error) {
 		cfg.LogLevel = util.LogLevelInfo
 	}
 
-	if *configPath != "" {
-		data, err := os.ReadFile(*configPath)
+	finalPath := explicitPath
+	if finalPath == "" {
+		finalPath = *configPath
+	}
+
+	if finalPath != "" {
+		data, err := os.ReadFile(finalPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				util.Warn("Config file %s not found, using flag defaults", *configPath)
+				util.Warn("Config file %s not found, using flag defaults", finalPath)
 				return cfg, nil
 			}
-			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
+			return nil, fmt.Errorf("failed to read config file %s: %w", finalPath, err)
 		}
-		if strings.HasSuffix(*configPath, ".json") {
+		if strings.HasSuffix(finalPath, ".json") {
 			if err := json.Unmarshal(data, cfg); err != nil {
 				return nil, err
 			}
@@ -168,6 +175,12 @@ func LoadConfig() (*ConsumerConfig, error) {
 	}
 	if cfg.CommitRetryBackoff == 0 {
 		cfg.CommitRetryBackoff = 500 * time.Millisecond
+	}
+	if cfg.CommitRetryMaxBackoff == 0 {
+		cfg.CommitRetryMaxBackoff = 2 * time.Second
+	}
+	if cfg.CommitRetryMaxBackoff < cfg.CommitRetryBackoff {
+		cfg.CommitRetryMaxBackoff = cfg.CommitRetryBackoff * 10
 	}
 	if cfg.StreamingCommitInterval == 0 {
 		cfg.StreamingCommitInterval = 1 * time.Second
@@ -226,5 +239,12 @@ func LoadConfig() (*ConsumerConfig, error) {
 	}
 
 	util.SetLevel(cfg.LogLevel)
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		util.Error("Failed to marshal config: %v", err)
+	} else {
+		util.Info("Configuration:\n%s", string(data))
+	}
 	return cfg, nil
 }
