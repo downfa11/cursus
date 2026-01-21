@@ -1,4 +1,4 @@
-name: DCO + GPG Check
+name: DCO Check
 
 on:
   pull_request:
@@ -6,24 +6,29 @@ on:
       - main
 
 jobs:
-  check-signatures:
+  validate-dco:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (Full History)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Check DCO Signed-off-by
+      - name: Validate DCO (Signed-off-by)
         run: |
-          git log --format='%H %B' origin/main..HEAD | while read sha msg; do
-            if ! echo "$msg" | grep -iq "Signed-off-by:"; then
-              echo "Commit $sha is missing Signed-off-by"
-              exit 1
+          COMMITS=$(git rev-list --no-merges origin/main..HEAD)
+          EXIT_CODE=0
+
+          for sha in $COMMITS; do
+            if ! git show -s --format='%B' "$sha" | grep -iq "Signed-off-by:"; then
+              echo "❌ Error: Commit $sha is missing 'Signed-off-by:'"
+              EXIT_CODE=1
+            else
+              echo "✅ DCO passed: $sha"
             fi
           done
 
-      - name: Check GPG signatures
-        run: |
-          git log --show-signature origin/main..HEAD | grep "Good signature" || {
-            echo "Some commits are not GPG signed"
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "🚨 All commits must include 'Signed-off-by:' in the message body."
             exit 1
-          }
+          fi

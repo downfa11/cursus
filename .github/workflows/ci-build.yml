@@ -4,6 +4,8 @@ on:
   push:  
     branches: [main, release-*]
     paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
@@ -17,6 +19,8 @@ on:
   pull_request:  
     branches: [main, release-*]  
     paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
