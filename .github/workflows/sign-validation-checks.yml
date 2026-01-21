@@ -1,0 +1,29 @@
+name: DCO + GPG Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-signatures:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check DCO Signed-off-by
+        run: |
+          git log --format='%H %B' origin/main..HEAD | while read sha msg; do
+            if ! echo "$msg" | grep -iq "Signed-off-by:"; then
+              echo "Commit $sha is missing Signed-off-by"
+              exit 1
+            fi
+          done
+
+      - name: Check GPG signatures
+        run: |
+          git log --show-signature origin/main..HEAD | grep "Good signature" || {
+            echo "Some commits are not GPG signed"
+            exit 1
+          }
