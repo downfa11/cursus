@@ -4,6 +4,12 @@ on:
   push:  
     branches: [main, release-*]
     paths:
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'Dockerfile'
+      - 'entrypoint.sh'
+      - 'broker.go'
       - 'cmd/**'
       - 'pkg/**'
       - 'test/**'
@@ -11,6 +17,12 @@ on:
   pull_request:  
     branches: [main, release-*]  
     paths:
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'Dockerfile'
+      - 'entrypoint.sh'
+      - 'broker.go'
       - 'cmd/**'
       - 'pkg/**'
       - 'test/**'
@@ -41,7 +53,8 @@ jobs:
       - name: Upload coverage reports to Codecov  
         uses: codecov/codecov-action@v5  
         with:  
-          files: ./coverage.out  
+          files: ./coverage.out 
+          token: ${{ secrets.CODECOV_TOKEN }} 
   
   build:  
     runs-on: ubuntu-latest  
