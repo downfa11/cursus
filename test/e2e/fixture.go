@@ -98,6 +98,14 @@ func initEnvironment(t *testing.T) {
 			t.Fatalf("Broker failed to become healthy: %v", err)
 		}
 	})
+
+	t.Cleanup(func() {
+		t.Log("Cleaning up docker compose environment for test...")
+		cmd := RunCompose("-f", composeFile, "down", "-v")
+		if err := cmd.Run(); err != nil {
+			t.Logf("Cleanup warning: docker compose down failed: %v", err)
+		}
+	})
 }
 
 func GivenStandalone(t *testing.T) *TestContext {
