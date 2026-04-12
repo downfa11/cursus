@@ -81,7 +81,31 @@ func (cc *ClusterController) IsLeader() bool {
 	return false
 }
 
-// todo. (issues #27) Delegate authorization to partition-level leader checks in future releases.
+// IsAuthorized checks if this broker is the leader for the given partition.
+// Falls back to Raft leader check if partition metadata is not yet available.
 func (cc *ClusterController) IsAuthorized(topic string, partition int) bool {
+	if cc.RaftManager == nil {
+		return false
+	}
+
+	fsmInstance := cc.RaftManager.GetFSM()
+	if fsmInstance == nil {
+		return cc.IsLeader()
+	}
+
+	key := fmt.Sprintf("%s-%d", topic, partition)
+	meta := fsmInstance.GetPartitionMetadata(key)
+	if meta == nil || meta.Leader == "" {
+		// No per-partition metadata yet; fall back to Raft leader as partition owner.
+		return cc.IsLeader()
+	}
+
+	// Compare partition leader with this broker's identity.
+	if cc.Router != nil && meta.Leader == cc.Router.brokerID {
+		return true
+	}
+
+	// Fallback: if this node is the Raft leader, it can serve any partition
+	// until partition-level routing is fully implemented.
 	return cc.IsLeader()
 }

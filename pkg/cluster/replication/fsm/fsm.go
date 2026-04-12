@@ -120,7 +120,7 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	case strings.HasPrefix(data, "DEREGISTER:"):
 		res = f.applyDeregisterCommand(strings.TrimPrefix(data, "DEREGISTER:"))
 	case strings.HasPrefix(data, "JOIN_GROUP:"):
-		res = f.applyJoinGroupCommand(strings.TrimPrefix(data, "JOIN_GROUP:"))
+		res = f.applyJoinGroupCommand(strings.TrimPrefix(data, "JOIN_GROUP:"), log.AppendedAt)
 	case strings.HasPrefix(data, "MESSAGE:"):
 		res = f.applyMessageCommand(strings.TrimPrefix(data, "MESSAGE:"))
 	case strings.HasPrefix(data, "BATCH:"):
@@ -238,17 +238,30 @@ func (f *BrokerFSM) GetPartitionMetadata(key string) *PartitionMetadata {
 	defer f.mu.RUnlock()
 
 	if meta := f.partitionMetadata[key]; meta != nil {
-		copy := *meta
-		return &copy
+		cp := *meta
+		cp.Replicas = append([]string(nil), meta.Replicas...)
+		cp.ISR = append([]string(nil), meta.ISR...)
+		return &cp
 	}
 	return nil
 }
 
-// todo. (issues #27)
-func (f *BrokerFSM) getCurrentRaftLeaderID() string {
+// getRegisteredBrokerIDs returns sorted broker IDs for deterministic assignment.
+func (f *BrokerFSM) getRegisteredBrokerIDs() []string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
+	ids := make([]string, 0, len(f.brokers))
+	for id := range f.brokers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// getCurrentRaftLeaderIDLocked returns the first broker ID (alphabetically).
+// Must be called with f.mu held.
+func (f *BrokerFSM) getCurrentRaftLeaderIDLocked() string {
 	if len(f.brokers) == 0 {
 		return ""
 	}
@@ -260,3 +273,4 @@ func (f *BrokerFSM) getCurrentRaftLeaderID() string {
 	sort.Strings(ids)
 	return ids[0]
 }
+

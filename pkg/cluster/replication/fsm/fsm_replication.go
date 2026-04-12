@@ -102,8 +102,10 @@ func (f *BrokerFSM) validateMessageCommand(cmd *types.MessageCommand) error {
 
 	firstMsg := cmd.Messages[0]
 
+	partitionKey := fmt.Sprintf("%s-%d", cmd.Topic, cmd.Partition)
+
 	f.mu.Lock()
-	_, topicExists := f.partitionMetadata[cmd.Topic]
+	_, topicExists := f.partitionMetadata[partitionKey]
 	exists, lastSeq := f.getProducerSequence(cmd.Topic, cmd.Partition, firstMsg.ProducerID)
 	f.mu.Unlock()
 

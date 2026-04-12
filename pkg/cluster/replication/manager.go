@@ -37,7 +37,10 @@ type RaftInterface interface {
 type ISRManagerInterface interface {
 	HasQuorum(topic string, partition int, minISR int) bool
 	UpdateHeartbeat(brokerID string)
-	GetISR() []string
+	GetISR(topic string, partition int) []string
+	SetLeader(isLeader bool)
+	Start()
+	Stop()
 }
 
 type RaftReplicationManager struct {
@@ -162,10 +165,18 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 
 				future := r.BootstrapCluster(bootstrapConfig)
 				if err := future.Error(); err != nil {
-					util.Error("Failed to bootstrap static cluster: %v", err)
-					return nil, fmt.Errorf("failed to bootstrap static cluster: %w", err)
+					// In static cluster mode, all nodes attempt bootstrap with the same
+					// configuration. Only the first to complete becomes the initial leader;
+					// the rest will get "already bootstrapped" errors which are safe to ignore.
+					if strings.Contains(err.Error(), "already") {
+						util.Warn("Bootstrap skipped (cluster already formed): %v", err)
+					} else {
+						util.Error("Failed to bootstrap static cluster: %v", err)
+						return nil, fmt.Errorf("failed to bootstrap static cluster: %w", err)
+					}
+				} else {
+					util.Info("Static cluster bootstrap completed")
 				}
-				util.Info("✅ Static cluster bootstrap completed")
 			}
 		}
 	} else if len(cfg.RaftPeers) > 0 {
@@ -176,13 +187,20 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 		}()
 	}
 
+	// Use a heartbeat timeout proportional to Raft election timeout.
+	// Raft HeartbeatTimeout=500ms, ElectionTimeout=1500ms. ISR heartbeat should be
+	// long enough to tolerate transient network delays but short enough to detect failures.
+	isrMgr := NewISRManager(brokerFSM, brokerID, 10*time.Second)
+	isrMgr.Start()
+
 	manager := &RaftReplicationManager{
-		raft:      r,
-		fsm:       brokerFSM,
-		brokerID:  brokerID,
-		localAddr: localAddr,
-		peers:     make(map[string]string),
-		leaderCh:  make(chan bool, 10),
+		raft:       r,
+		fsm:        brokerFSM,
+		isrManager: isrMgr,
+		brokerID:   brokerID,
+		localAddr:  localAddr,
+		peers:      make(map[string]string),
+		leaderCh:   make(chan bool, 10),
 	}
 
 	go manager.observeLeadership(notifyCh)
@@ -211,6 +229,12 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 func (rm *RaftReplicationManager) observeLeadership(notifyCh <-chan bool) {
 	for isLeader := range notifyCh {
 		rm.isLeader.Store(isLeader)
+
+		// Notify ISRManager of leadership change so it can activate grace period
+		// on promotion and avoid false ISR evictions from an empty heartbeat map.
+		if rm.isrManager != nil {
+			rm.isrManager.SetLeader(isLeader)
+		}
 
 		select {
 		case rm.leaderCh <- isLeader:
@@ -389,6 +413,9 @@ func (rm *RaftReplicationManager) ApplyResponse(prefix string, data []byte, time
 }
 
 func (rm *RaftReplicationManager) Shutdown() error {
+	if rm.isrManager != nil {
+		rm.isrManager.Stop()
+	}
 	if rm.raft != nil {
 		if err := rm.raft.Shutdown().Error(); err != nil {
 			util.Error("Failed to shutdown raft: %v", err)

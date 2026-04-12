@@ -50,16 +50,34 @@ func (f *BrokerFSM) applyTopicCommand(data string) interface{} {
 		return err
 	}
 
-	leader := topicCmd.LeaderID
-	if leader == "" {
-		leader = f.getCurrentRaftLeaderID()
-	}
+	// Collect registered brokers for round-robin leader assignment.
+	brokerIDs := f.getRegisteredBrokerIDs()
 
 	f.mu.Lock()
-	f.partitionMetadata[topicCmd.Name] = &PartitionMetadata{
-		PartitionCount: topicCmd.Partitions,
-		Leader:         leader,
-		LeaderEpoch:    1,
+	for i := 0; i < topicCmd.Partitions; i++ {
+		key := fmt.Sprintf("%s-%d", topicCmd.Name, i)
+
+		// Skip if partition metadata already exists (idempotent topic creation).
+		if _, exists := f.partitionMetadata[key]; exists {
+			continue
+		}
+
+		// Assign leader via round-robin across registered brokers.
+		// Falls back to explicit leader_id or Raft leader if no brokers are registered.
+		leader := topicCmd.LeaderID
+		if len(brokerIDs) > 0 {
+			leader = brokerIDs[i%len(brokerIDs)]
+		} else if leader == "" {
+			leader = f.getCurrentRaftLeaderIDLocked()
+		}
+
+		f.partitionMetadata[key] = &PartitionMetadata{
+			PartitionCount: topicCmd.Partitions,
+			Leader:         leader,
+			Replicas:       append([]string(nil), brokerIDs...),
+			ISR:            append([]string(nil), brokerIDs...),
+			LeaderEpoch:    1,
+		}
 	}
 	f.mu.Unlock()
 
@@ -142,7 +160,7 @@ func (f *BrokerFSM) applyGroupSyncCommand(jsonData string) interface{} {
 	return nil
 }
 
-func (f *BrokerFSM) applyJoinGroupCommand(data string) interface{} {
+func (f *BrokerFSM) applyJoinGroupCommand(data string, appendedAt time.Time) interface{} {
 	var info BrokerInfo
 	if err := json.Unmarshal([]byte(data), &info); err != nil {
 		return fmt.Errorf("failed to unmarshal join info: %w", err)
@@ -151,7 +169,9 @@ func (f *BrokerFSM) applyJoinGroupCommand(data string) interface{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	info.LastSeen = time.Now()
+	// Use the Raft log's AppendedAt timestamp for deterministic replay across
+	// all nodes, instead of time.Now() which would diverge on followers.
+	info.LastSeen = appendedAt
 	info.Status = "active"
 	f.brokers[info.ID] = &info
 

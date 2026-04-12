@@ -11,7 +11,10 @@ import (
 	"github.com/cursus-io/cursus/util"
 )
 
-const defaultHeartbeatTimeout = 10 * time.Second
+const (
+	defaultHeartbeatTimeout = 10 * time.Second
+	defaultGracePeriod      = 15 * time.Second
+)
 
 type ISRManager struct {
 	fsm              *fsm.BrokerFSM
@@ -19,6 +22,9 @@ type ISRManager struct {
 	mu               sync.RWMutex
 	lastSeen         map[string]time.Time
 	heartbeatTimeout time.Duration
+	gracePeriod      time.Duration
+	leaderSince      time.Time
+	isLeader         bool
 
 	stopCh    chan struct{}
 	startOnce sync.Once
@@ -34,8 +40,38 @@ func NewISRManager(fsm *fsm.BrokerFSM, brokerID string, heartbeatTimeout time.Du
 		brokerID:         brokerID,
 		lastSeen:         make(map[string]time.Time),
 		heartbeatTimeout: heartbeatTimeout,
+		gracePeriod:      defaultGracePeriod,
 		stopCh:           make(chan struct{}),
 	}
+}
+
+// SetLeader updates leadership state and resets the grace period timer on promotion.
+// During the grace period after becoming leader, ISR shrinking is suppressed to avoid
+// false evictions caused by an empty lastSeen map.
+func (i *ISRManager) SetLeader(isLeader bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	wasLeader := i.isLeader
+	i.isLeader = isLeader
+
+	if isLeader && !wasLeader {
+		i.leaderSince = time.Now()
+		util.Info("ISRManager: became leader, grace period started (%v)", i.gracePeriod)
+	}
+
+	if !isLeader {
+		i.leaderSince = time.Time{}
+	}
+}
+
+// inGracePeriod returns true if this node recently became leader and should
+// not shrink ISR until heartbeats have had time to arrive.
+func (i *ISRManager) inGracePeriod() bool {
+	if !i.isLeader || i.leaderSince.IsZero() {
+		return false
+	}
+	return time.Since(i.leaderSince) < i.gracePeriod
 }
 
 func (i *ISRManager) Start() {
@@ -91,7 +127,6 @@ func (i *ISRManager) UpdateHeartbeat(brokerID string) {
 
 func (i *ISRManager) ComputeISR(topic string, partition int) []string {
 	key := fmt.Sprintf("%s-%d", topic, partition)
-	var isr []string
 
 	i.mu.RLock()
 	metadata := i.fsm.GetPartitionMetadata(key)
@@ -102,6 +137,20 @@ func (i *ISRManager) ComputeISR(topic string, partition int) []string {
 		return nil
 	}
 
+	// During grace period after leader promotion, preserve current ISR
+	// to avoid false evictions from an empty lastSeen map.
+	if i.inGracePeriod() {
+		existing := append([]string(nil), metadata.ISR...)
+		i.mu.RUnlock()
+		if len(existing) > 0 {
+			util.Debug("ISR grace period active for %s, preserving existing ISR: %v", key, existing)
+			return existing
+		}
+		// If no existing ISR, fall through to use all replicas
+		return append([]string(nil), metadata.Replicas...)
+	}
+
+	var isr []string
 	for _, broker := range metadata.Replicas {
 		if last, ok := i.lastSeen[broker]; ok && time.Since(last) < i.heartbeatTimeout {
 			isr = append(isr, broker)
