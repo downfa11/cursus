@@ -14,20 +14,13 @@ import (
 func (c *Consumer) heartbeatLoop() {
 	ticker := time.NewTicker(time.Duration(c.config.HeartbeatIntervalMS) * time.Millisecond)
 	defer ticker.Stop()
-
-	stopConnCloser := make(chan struct{})
-	go func() {
-		select {
-		case <-c.doneCh:
-			c.resetHeartbeatConn()
-		case <-stopConnCloser:
-		}
-	}()
-	defer close(stopConnCloser)
+	defer c.resetHeartbeatConn()
 
 	for {
 		select {
 		case <-c.doneCh:
+			return
+		case <-c.mainCtx.Done():
 			return
 		case <-ticker.C:
 			conn := c.getOrDialHeartbeatConn()

@@ -109,6 +109,35 @@ func TestConsumerCloseActiveConnectionsClosesPartitionSockets(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestConsumerGenerationWorkersStopOnRebalanceCancellation(t *testing.T) {
+	c := newTestConsumer(t)
+	c.config.HeartbeatIntervalMS = int(time.Hour / time.Millisecond)
+	c.config.MetadataRefreshInterval = time.Hour
+
+	c.wg.Add(2)
+	go func() {
+		defer c.wg.Done()
+		c.heartbeatLoop()
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.metadataRefreshLoop()
+	}()
+
+	c.mainCancel()
+	workersStopped := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(workersStopped)
+	}()
+
+	select {
+	case <-workersStopped:
+	case <-time.After(time.Second):
+		t.Fatal("generation workers did not stop after rebalance cancellation")
+	}
+}
+
 func TestConsumerClient_ConnectWithFailover_NoBrokers(t *testing.T) {
 	cfg := NewDefaultConsumerConfig()
 	cfg.BrokerAddrs = []string{}

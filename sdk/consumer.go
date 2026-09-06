@@ -181,7 +181,7 @@ func (c *Consumer) Start(handler func(Message) error) error {
 		go c.startConsuming()
 	}
 
-	<-c.mainCtx.Done()
+	<-c.doneCh
 	return nil
 }
 
@@ -588,6 +588,8 @@ func (c *Consumer) metadataRefreshLoop() {
 	for {
 		select {
 		case <-c.doneCh:
+			return
+		case <-c.mainCtx.Done():
 			return
 		case <-ticker.C:
 			if err := c.fetchMetadata(); err != nil {
