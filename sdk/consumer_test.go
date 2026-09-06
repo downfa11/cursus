@@ -3,6 +3,7 @@ package sdk
 import (
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,6 +82,31 @@ func TestConsumerClient_UpdateLeader_DifferentAddrUpdates(t *testing.T) {
 
 	assert.NotEqual(t, first.addr, second.addr)
 	assert.Equal(t, "broker-2:9000", second.addr)
+}
+
+func TestConsumerCommitBatchRejectsStaleGenerationDuringRebalance(t *testing.T) {
+	c := newTestConsumer(t)
+	atomic.StoreInt32(&c.rebalancing, 1)
+	c.commitRetryMap[0] = 9
+	resultCh := make(chan error, 1)
+
+	c.commitBatch(map[int]uint64{0: 10}, map[int][]chan error{0: {resultCh}})
+
+	require.ErrorIs(t, <-resultCh, errConsumerRebalancing)
+	assert.Equal(t, uint64(9), c.commitRetryMap[0])
+}
+
+func TestConsumerCloseActiveConnectionsClosesPartitionSockets(t *testing.T) {
+	c := newTestConsumer(t)
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	c.partitionConsumers[0] = &PartitionConsumer{consumer: c, conn: client}
+
+	c.closeActiveConnections()
+
+	_ = server.SetReadDeadline(time.Now().Add(time.Second))
+	_, err := server.Read(make([]byte, 1))
+	require.Error(t, err)
 }
 
 func TestConsumerClient_ConnectWithFailover_NoBrokers(t *testing.T) {

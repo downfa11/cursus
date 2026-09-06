@@ -20,6 +20,8 @@ type commitEntry struct {
 	respCh    chan error
 }
 
+var errConsumerRebalancing = errors.New("consumer is rebalancing")
+
 // Consumer manages group membership, partition assignment, and message delivery.
 type Consumer struct {
 	config             *ConsumerConfig
@@ -306,17 +308,32 @@ func (c *Consumer) processRetryQueue() {
 }
 
 func (c *Consumer) commitBatch(offsets map[int]uint64, respChannels map[int][]chan error) {
+	if atomic.LoadInt32(&c.rebalancing) == 1 {
+		for _, channels := range respChannels {
+			for _, ch := range channels {
+				if ch != nil {
+					ch <- errConsumerRebalancing
+				}
+			}
+		}
+		return
+	}
+
 	success := c.sendBatchCommit(offsets)
 
 	for pid, channels := range respChannels {
 		var err error
 		if !success {
-			c.commitMu.Lock()
-			if current, ok := c.commitRetryMap[pid]; !ok || offsets[pid] > current {
-				c.commitRetryMap[pid] = offsets[pid]
+			if atomic.LoadInt32(&c.rebalancing) == 1 {
+				err = errConsumerRebalancing
+			} else {
+				c.commitMu.Lock()
+				if current, ok := c.commitRetryMap[pid]; !ok || offsets[pid] > current {
+					c.commitRetryMap[pid] = offsets[pid]
+				}
+				c.commitMu.Unlock()
+				err = fmt.Errorf("batch commit failed for partition %d", pid)
 			}
-			c.commitMu.Unlock()
-			err = fmt.Errorf("batch commit failed for partition %d", pid)
 		}
 		for _, ch := range channels {
 			if ch != nil {
@@ -346,6 +363,10 @@ func (c *Consumer) validateCommitConn() bool {
 }
 
 func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
+	if atomic.LoadInt32(&c.rebalancing) == 1 {
+		return false
+	}
+
 	c.commitMu.Lock()
 	needsNewConn := c.commitConn == nil || !c.validateCommitConn()
 	c.commitMu.Unlock()

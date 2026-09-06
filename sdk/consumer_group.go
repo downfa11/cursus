@@ -260,29 +260,16 @@ func (c *Consumer) handleRebalanceSignal() {
 	LogInfo("Rebalance started — stopping existing workers")
 
 	c.mainCancel()
+	c.closeActiveConnections()
 
 	c.wg.Wait()
 
-	drainDeadline := time.After(3 * time.Second)
-	for {
-		select {
-		case <-c.commitCh:
-		case <-time.After(100 * time.Millisecond):
-			goto drainDone
-		case <-drainDeadline:
-			LogWarn("Rebalance drain timeout, forcing continuation")
-			goto drainDone
-		}
-	}
-drainDone:
-
-	c.resetHeartbeatConn()
 	c.commitMu.Lock()
-	if c.commitConn != nil {
-		_ = c.commitConn.Close()
-		c.commitConn = nil
-	}
+	c.commitRetryMap = make(map[int]uint64)
 	c.commitMu.Unlock()
+	c.offsetsMu.Lock()
+	c.currentOffsets = make(map[int]uint64)
+	c.offsetsMu.Unlock()
 
 	c.mu.Lock()
 	for _, pc := range c.partitionConsumers {
