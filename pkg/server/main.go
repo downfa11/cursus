@@ -439,6 +439,13 @@ func handleConnWithContext(ctx context.Context, conn net.Conn, cmdHandler *contr
 
 		data, err := readMessage(conn, cmdHandler.Config.CompressionType)
 		if err != nil {
+			var frameErr *partialFrameError
+			if errors.As(err, &frameErr) && frameErr.consumed {
+				// A deadline after any frame byte leaves the connection between
+				// framing boundaries. Do not attempt to parse the remainder as a
+				// new length prefix.
+				return
+			}
 			select {
 			case <-clientCtx.Done():
 				return
@@ -510,6 +517,10 @@ func HandleConnection(ctx context.Context, conn net.Conn, tm *topic.TopicManager
 
 		data, err := readMessage(conn, cfg.CompressionType)
 		if err != nil {
+			var frameErr *partialFrameError
+			if errors.As(err, &frameErr) && frameErr.consumed {
+				return
+			}
 			select {
 			case <-clientCtx.Done():
 				return
@@ -627,13 +638,34 @@ func initializeConnection(cfg *config.Config, tm *topic.TopicManager, cd *coordi
 	return cmdHandler, ctx
 }
 
+type partialFrameError struct {
+	err      error
+	consumed bool
+}
+
+func (e *partialFrameError) Error() string { return e.err.Error() }
+func (e *partialFrameError) Unwrap() error { return e.err }
+func (e *partialFrameError) Timeout() bool {
+	if netErr, ok := e.err.(net.Error); ok {
+		return netErr.Timeout()
+	}
+	return false
+}
+
+func (e *partialFrameError) Temporary() bool {
+	if netErr, ok := e.err.(net.Error); ok {
+		return netErr.Temporary()
+	}
+	return false
+}
+
 func readMessage(conn net.Conn, compressionType string) ([]byte, error) {
 	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(conn, lenBuf); err != nil {
+	if n, err := io.ReadFull(conn, lenBuf); err != nil {
 		if err != io.EOF {
 			util.Error("⚠️ Read length error: %v", err)
 		}
-		return nil, err
+		return nil, &partialFrameError{err: err, consumed: n > 0}
 	}
 
 	msgLen := binary.BigEndian.Uint32(lenBuf)
@@ -641,11 +673,11 @@ func readMessage(conn net.Conn, compressionType string) ([]byte, error) {
 		return nil, fmt.Errorf("message size %d exceeds maximum %d", msgLen, util.MaxMessageSize)
 	}
 	msgBuf := make([]byte, msgLen)
-	if _, err := io.ReadFull(conn, msgBuf); err != nil {
+	if n, err := io.ReadFull(conn, msgBuf); err != nil {
 		if err != io.EOF {
 			util.Error("⚠️ Read message error: %v (len=%d)", err, len(msgBuf))
 		}
-		return nil, err
+		return nil, &partialFrameError{err: err, consumed: n > 0}
 	}
 
 	data, err := util.DecompressMessage(msgBuf, compressionType)

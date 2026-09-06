@@ -17,6 +17,10 @@ metadata:
     {{- include "cursus.labels" . | nindent 4 }}  
 spec:  
   replicas: {{ .Values.replicaCount }}  
+  strategy:
+    # Standalone storage has one writer. Recreate prevents a rollout from
+    # starting a replacement broker before the old pod has terminated.
+    type: Recreate
   selector:  
     matchLabels:  
       {{- include "cursus.selectorLabels" . | nindent 6 }}  

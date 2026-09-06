@@ -2,8 +2,8 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -68,6 +68,9 @@ type Producer struct {
 	closeMu   sync.Mutex
 	closeDone chan struct{}
 	closeErr  error
+
+	deliveryMu  sync.Mutex
+	deliveryErr error
 
 	bmMu         sync.Mutex
 	bmTotalTime  map[int]time.Duration
@@ -171,16 +174,8 @@ func (p *Producer) fetchMetadata() {
 		return
 	}
 	for _, addr := range addrs {
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		conn, err := p.client.ConnectToAddr(addr)
 		if err != nil {
-			continue
-		}
-		if err := negotiateConfiguredProtocol(conn, p.config.ProtocolVersion, p.config.ProtocolFeatures, p.config.RequireProtocolFeatures, p.config.ProtocolNegotiationTimeoutMS); err != nil {
-			_ = conn.Close()
-			continue
-		}
-		if err := authenticateConfiguredClient(conn, p.config.Principal, p.config.AuthToken); err != nil {
-			_ = conn.Close()
 			continue
 		}
 		cmd := fmt.Sprintf("METADATA topic=%s", p.config.Topic)
@@ -260,18 +255,12 @@ func (p *Producer) CreateTopicWithOptions(topic string, options TopicOptions) er
 		return fmt.Errorf("no broker addresses available")
 	}
 	brokerAddr := p.config.BrokerAddrs[0]
-	conn, err := net.Dial("tcp", brokerAddr)
+	conn, err := p.client.ConnectToAddr(brokerAddr)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := negotiateConfiguredProtocol(conn, p.config.ProtocolVersion, p.config.ProtocolFeatures, p.config.RequireProtocolFeatures, p.config.ProtocolNegotiationTimeoutMS); err != nil {
-		return fmt.Errorf("protocol negotiation: %w", err)
-	}
-	if err := authenticateConfiguredClient(conn, p.config.Principal, p.config.AuthToken); err != nil {
-		return fmt.Errorf("authentication: %w", err)
-	}
 	cmdBytes := EncodeMessage("admin", createCmd)
 
 	if err := WriteWithLength(conn, cmdBytes); err != nil {
@@ -560,20 +549,38 @@ func (p *Producer) extractAny(buf *partitionBuffer) []Message {
 
 // ─── Flush / Stats ────────────────────────────────────────────────────────────
 
-func (p *Producer) Flush() {
+// Flush waits for batches queued before its barrier and reports any permanent
+// delivery failure observed by those senders.
+func (p *Producer) Flush() error {
 	timeout := p.flushTimeout()
 
 	p.closeMu.Lock()
 	if atomic.LoadInt32(&p.closed) == 1 {
 		p.closeMu.Unlock()
-		return
+		return p.deliveryError()
 	}
 	waiters := p.requestDrain(false)
 	p.closeMu.Unlock()
 
 	if !waitForDrain(waiters, timeout) {
-		LogWarn("Flush timeout after %v", timeout)
+		return errors.Join(fmt.Errorf("producer flush timeout after %v", timeout), p.deliveryError())
 	}
+	return p.deliveryError()
+}
+
+func (p *Producer) recordDeliveryFailure(err error) {
+	if err == nil {
+		return
+	}
+	p.deliveryMu.Lock()
+	p.deliveryErr = errors.Join(p.deliveryErr, err)
+	p.deliveryMu.Unlock()
+}
+
+func (p *Producer) deliveryError() error {
+	p.deliveryMu.Lock()
+	defer p.deliveryMu.Unlock()
+	return p.deliveryErr
 }
 
 func (p *Producer) flushTimeout() time.Duration {
@@ -793,5 +800,5 @@ func (p *Producer) Close() (result error) {
 		}
 		return fmt.Errorf("producer close: drain timeout after %v", timeout)
 	}
-	return clientErr
+	return errors.Join(clientErr, p.deliveryError())
 }

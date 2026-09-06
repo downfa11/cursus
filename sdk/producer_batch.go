@@ -42,7 +42,7 @@ func (p *Producer) sendBatch(part int, batch []Message) {
 	if err != nil {
 		LogError("encode batch failed: %v", err)
 		p.cleanupBatchState(part, batchID)
-		p.handleSendFailure(part, batch)
+		p.recordDeliveryFailure(fmt.Errorf("encode batch %s: %w", batchID, err))
 		return
 	}
 
@@ -50,7 +50,7 @@ func (p *Producer) sendBatch(part int, batch []Message) {
 	if err != nil {
 		LogError("compress batch failed: %v", err)
 		p.cleanupBatchState(part, batchID)
-		p.handleSendFailure(part, batch)
+		p.recordDeliveryFailure(fmt.Errorf("compress batch %s: %w", batchID, err))
 		return
 	}
 
@@ -63,6 +63,7 @@ func (p *Producer) sendBatch(part int, batch []Message) {
 		}
 		p.cleanupBatchState(part, batchID)
 		if isNonRetryableProducerError(err) {
+			p.recordDeliveryFailure(fmt.Errorf("deliver batch %s: %w", batchID, err))
 			return
 		}
 		p.handleSendFailure(part, batch)
@@ -98,6 +99,7 @@ func (p *Producer) sendBatch(part int, batch []Message) {
 			producerSendErrors.WithLabelValues(p.config.Topic).Inc()
 		}
 		p.cleanupBatchState(part, batchID)
+		p.recordDeliveryFailure(fmt.Errorf("deliver batch %s: unexpected acknowledgement status %q", batchID, ackResp.Status))
 	}
 }
 

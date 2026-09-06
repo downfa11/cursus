@@ -74,42 +74,9 @@ func (pc *ProducerClient) connectPartitionLocked(idx int, addr string) error {
 		return fmt.Errorf("invalid partition index: %d", idx)
 	}
 
-	var conn net.Conn
-	var err error
-
-	if pc.config.UseTLS {
-		if pc.tlsConfig == nil {
-			return fmt.Errorf("TLS enabled but certificate not loaded")
-		}
-		conn, err = tls.DialWithDialer(
-			&net.Dialer{Timeout: 5 * time.Second},
-			"tcp", addr, pc.tlsConfig,
-		)
-		if err != nil {
-			return fmt.Errorf("TLS dial to %s failed: %w", addr, err)
-		}
-	} else {
-		conn, err = net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
-			return fmt.Errorf("TCP dial to %s failed: %w", addr, err)
-		}
-	}
-
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetNoDelay(true)
-		_ = tcpConn.SetKeepAlive(true)
-		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
-		_ = tcpConn.SetReadBuffer(2 * 1024 * 1024)
-		_ = tcpConn.SetWriteBuffer(2 * 1024 * 1024)
-	}
-
-	if err := negotiateConfiguredProtocol(conn, pc.config.ProtocolVersion, pc.config.ProtocolFeatures, pc.config.RequireProtocolFeatures, pc.config.ProtocolNegotiationTimeoutMS); err != nil {
-		_ = conn.Close()
-		return fmt.Errorf("protocol negotiation with %s failed: %w", addr, err)
-	}
-	if err := authenticateConfiguredClient(conn, pc.config.Principal, pc.config.AuthToken); err != nil {
-		_ = conn.Close()
-		return fmt.Errorf("authenticate with %s: %w", addr, err)
+	conn, err := pc.connectConfigured(addr)
+	if err != nil {
+		return err
 	}
 
 	var currentConns []net.Conn
@@ -128,6 +95,54 @@ func (pc *ProducerClient) connectPartitionLocked(idx int, addr string) error {
 
 	pc.conns.Store(&tmp)
 	return nil
+}
+
+// ConnectToAddr establishes a fully configured SDK session for bootstrap and
+// administrative requests as well as partition traffic.
+func (pc *ProducerClient) ConnectToAddr(addr string) (net.Conn, error) {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	if pc.closed.Load() {
+		return nil, fmt.Errorf("producer client is closed")
+	}
+	return pc.connectConfigured(addr)
+}
+
+func (pc *ProducerClient) connectConfigured(addr string) (net.Conn, error) {
+	var conn net.Conn
+	var err error
+	if pc.config.UseTLS {
+		if pc.tlsConfig == nil {
+			return nil, fmt.Errorf("TLS enabled but certificate not loaded")
+		}
+		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr, pc.tlsConfig)
+		if err != nil {
+			return nil, fmt.Errorf("TLS dial to %s failed: %w", addr, err)
+		}
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("TCP dial to %s failed: %w", addr, err)
+		}
+	}
+
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
+		_ = tcpConn.SetReadBuffer(2 * 1024 * 1024)
+		_ = tcpConn.SetWriteBuffer(2 * 1024 * 1024)
+	}
+
+	if err := negotiateConfiguredProtocol(conn, pc.config.ProtocolVersion, pc.config.ProtocolFeatures, pc.config.RequireProtocolFeatures, pc.config.ProtocolNegotiationTimeoutMS); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("protocol negotiation with %s failed: %w", addr, err)
+	}
+	if err := authenticateConfiguredClient(conn, pc.config.Principal, pc.config.AuthToken); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("authenticate with %s: %w", addr, err)
+	}
+	return conn, nil
 }
 
 func (pc *ProducerClient) GetConn(part int) net.Conn {

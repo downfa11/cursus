@@ -327,6 +327,21 @@ func TestReadMessage_PartialBody(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestReadMessage_PartialFrameErrorRecordsConsumedBytes(t *testing.T) {
+	client, server := newTestConnPair(t)
+	defer func() { _ = server.Close() }()
+
+	if _, err := server.Write([]byte{0x00, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	_, err := readMessage(client, "none")
+	var frameErr *partialFrameError
+	if !errors.As(err, &frameErr) || !frameErr.consumed {
+		t.Fatalf("read error = %v, want partial frame error with consumed bytes", err)
+	}
+}
+
 func TestReadMessage_RejectsOversizedFrameBeforeReadingBody(t *testing.T) {
 	client, server := newTestConnPair(t)
 
