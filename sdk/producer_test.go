@@ -2,8 +2,8 @@ package sdk
 
 import (
 	"encoding/json"
-	"net"
 	"errors"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -517,6 +517,150 @@ func TestProducer_ParseAckResponse_Idempotence_Valid(t *testing.T) {
 	resp, err := p.parseAckResponse(data)
 	require.NoError(t, err)
 	assert.Equal(t, "OK", resp.Status)
+}
+
+func TestProducer_ParseAckResponseForBatch_RequiresExactIdentityAndRange(t *testing.T) {
+	cfg := NewDefaultPublisherConfig()
+	p := &Producer{config: cfg, client: mustNewProducerClient(cfg)}
+	first := Message{ProducerID: "producer-p0", Epoch: 42, SeqNum: 11}
+	last := Message{ProducerID: "producer-p0", Epoch: 42, SeqNum: 13}
+
+	tests := []struct {
+		name string
+		ack  AckResponse
+		want string
+	}{
+		{
+			name: "producer",
+			ack:  AckResponse{Status: "OK", ProducerID: "other", ProducerEpoch: 42, SeqStart: 11, SeqEnd: 13},
+			want: "producer mismatch",
+		},
+		{
+			name: "epoch",
+			ack:  AckResponse{Status: "OK", ProducerID: "producer-p0", ProducerEpoch: 43, SeqStart: 11, SeqEnd: 13},
+			want: "epoch mismatch",
+		},
+		{
+			name: "range",
+			ack:  AckResponse{Status: "OK", ProducerID: "producer-p0", ProducerEpoch: 42, SeqStart: 12, SeqEnd: 13},
+			want: "sequence range mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.ack)
+			require.NoError(t, err)
+
+			_, err = p.parseAckResponseForBatch(data, 0, first, last)
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+
+	data, err := json.Marshal(AckResponse{Status: "OK", ProducerID: first.ProducerID, ProducerEpoch: first.Epoch, SeqStart: first.SeqNum, SeqEnd: last.SeqNum})
+	require.NoError(t, err)
+	_, err = p.parseAckResponseForBatch(data, 0, first, last)
+	require.NoError(t, err)
+}
+
+func TestProducerSendWithRetryForBatchReconnectsAfterUnusableAck(t *testing.T) {
+	tests := []struct {
+		name         string
+		respond      func(net.Conn, AckResponse) error
+		ackTimeoutMS int
+	}{
+		{
+			name: "identity mismatch",
+			respond: func(conn net.Conn, ack AckResponse) error {
+				ack.ProducerID = "stale-producer"
+				data, err := json.Marshal(ack)
+				if err != nil {
+					return err
+				}
+				return WriteWithLength(conn, data)
+			},
+			ackTimeoutMS: 500,
+		},
+		{
+			name: "truncated response",
+			respond: func(conn net.Conn, _ AckResponse) error {
+				_, err := conn.Write([]byte{0, 0, 0, 4, '{'})
+				return err
+			},
+			ackTimeoutMS: 20,
+		},
+		{
+			name:         "read timeout",
+			respond:      func(net.Conn, AckResponse) error { return nil },
+			ackTimeoutMS: 20,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			defer func() { _ = listener.Close() }()
+
+			cfg := NewDefaultPublisherConfig()
+			cfg.BrokerAddrs = []string{listener.Addr().String()}
+			cfg.MaxRetries = 1
+			cfg.RetryBackoffMS = 1
+			cfg.MaxBackoffMS = 1
+			cfg.AckTimeoutMS = tt.ackTimeoutMS
+			client := mustNewProducerClient(cfg)
+			firstServer, firstClient := net.Pipe()
+			connections := []net.Conn{firstClient}
+			client.conns.Store(&connections)
+			p := &Producer{config: cfg, client: client, done: make(chan struct{})}
+			defer func() { _ = client.Close() }()
+
+			first := Message{ProducerID: "producer-p0", Epoch: client.Epoch, SeqNum: 11}
+			last := Message{ProducerID: first.ProducerID, Epoch: first.Epoch, SeqNum: 13}
+			ack := AckResponse{Status: "OK", ProducerID: first.ProducerID, ProducerEpoch: first.Epoch, SeqStart: first.SeqNum, SeqEnd: last.SeqNum}
+
+			firstDone := make(chan error, 1)
+			go func() {
+				defer func() { _ = firstServer.Close() }()
+				if _, err := ReadWithLength(firstServer); err != nil {
+					firstDone <- err
+					return
+				}
+				if err := tt.respond(firstServer, ack); err != nil {
+					firstDone <- err
+					return
+				}
+				_ = firstServer.SetReadDeadline(time.Now().Add(time.Second))
+				_, err := firstServer.Read(make([]byte, 1))
+				firstDone <- err
+			}()
+
+			retryDone := make(chan error, 1)
+			go func() {
+				conn, err := listener.Accept()
+				if err != nil {
+					retryDone <- err
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				if _, err := ReadWithLength(conn); err != nil {
+					retryDone <- err
+					return
+				}
+				data, err := json.Marshal(ack)
+				if err == nil {
+					err = WriteWithLength(conn, data)
+				}
+				retryDone <- err
+			}()
+
+			resp, err := p.sendWithRetryForBatch([]byte("payload"), 0, first, last)
+			require.NoError(t, err)
+			assert.Equal(t, ack, *resp)
+			require.Error(t, <-firstDone)
+			require.NoError(t, <-retryDone)
+		})
+	}
 }
 
 func TestProducer_NonRetryableProducerError(t *testing.T) {
@@ -1111,7 +1255,13 @@ func newProducerDrainTestHarness(t *testing.T) (*Producer, <-chan producerDrainB
 			resultCh <- producerDrainBrokerResult{err: err}
 			return
 		}
-		ack, err := json.Marshal(AckResponse{Status: "OK"})
+		ack, err := json.Marshal(AckResponse{
+			Status:        "OK",
+			ProducerID:    messages[0].ProducerID,
+			ProducerEpoch: messages[0].Epoch,
+			SeqStart:      messages[0].SeqNum,
+			SeqEnd:        messages[len(messages)-1].SeqNum,
+		})
 		if err == nil {
 			err = WriteWithLength(brokerConn, ack)
 		}

@@ -55,7 +55,7 @@ func (p *Producer) sendBatch(part int, batch []Message) {
 	}
 
 	sendStart := time.Now()
-	ackResp, err := p.sendWithRetry(payload, part)
+	ackResp, err := p.sendWithRetryForBatch(payload, part, batch[0], batch[len(batch)-1])
 	if err != nil {
 		LogError("send failed: %v", err)
 		if p.config.EnableMetrics {
@@ -180,6 +180,10 @@ func (p *Producer) handlePartialFailure(part int, batch []Message, ackResp *AckR
 }
 
 func (p *Producer) sendWithRetry(payload []byte, part int) (*AckResponse, error) {
+	return p.sendWithRetryForBatch(payload, part, Message{}, Message{})
+}
+
+func (p *Producer) sendWithRetryForBatch(payload []byte, part int, first, last Message) (*AckResponse, error) {
 	maxAttempts := p.config.MaxRetries + 1
 	backoff := p.config.RetryBackoffMS
 
@@ -243,6 +247,8 @@ func (p *Producer) sendWithRetry(payload []byte, part int) (*AckResponse, error)
 
 		if err != nil {
 			lastErr = fmt.Errorf("read ack failed: %w", err)
+			brokerAddr := p.getPartitionLeaderAddr(part)
+			_ = p.client.ReconnectPartition(part, brokerAddr)
 			if !p.waitForRetry(backoff) {
 				return nil, fmt.Errorf("producer is closed")
 			}
@@ -250,9 +256,11 @@ func (p *Producer) sendWithRetry(payload []byte, part int) (*AckResponse, error)
 			continue
 		}
 
-		ackResp, err := p.parseAckResponse(resp)
+		ackResp, err := p.parseAckResponseForBatch(resp, part, first, last)
 		if err != nil {
 			lastErr = err
+			brokerAddr := p.getPartitionLeaderAddr(part)
+			_ = p.client.ReconnectPartition(part, brokerAddr)
 			if !p.waitForRetry(backoff) {
 				return nil, fmt.Errorf("producer is closed")
 			}
@@ -263,6 +271,23 @@ func (p *Producer) sendWithRetry(payload []byte, part int) (*AckResponse, error)
 		return ackResp, nil
 	}
 	return nil, lastErr
+}
+
+func (p *Producer) parseAckResponseForBatch(resp []byte, part int, first, last Message) (*AckResponse, error) {
+	ackResp, err := p.parseAckResponse(resp)
+	if err != nil || p.config.Acks == "0" || first.ProducerID == "" {
+		return ackResp, err
+	}
+	if ackResp.ProducerID != first.ProducerID {
+		return nil, fmt.Errorf("ack producer mismatch for partition %d: expected %q got %q", part, first.ProducerID, ackResp.ProducerID)
+	}
+	if ackResp.ProducerEpoch != first.Epoch {
+		return nil, fmt.Errorf("ack epoch mismatch for partition %d: expected %d got %d", part, first.Epoch, ackResp.ProducerEpoch)
+	}
+	if ackResp.SeqStart != first.SeqNum || ackResp.SeqEnd != last.SeqNum {
+		return nil, fmt.Errorf("ack sequence range mismatch for partition %d: expected %d-%d got %d-%d", part, first.SeqNum, last.SeqNum, ackResp.SeqStart, ackResp.SeqEnd)
+	}
+	return ackResp, nil
 }
 
 func (p *Producer) waitForRetry(backoffMS int) bool {
