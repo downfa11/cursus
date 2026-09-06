@@ -549,8 +549,6 @@ func (p *Producer) extractAny(buf *partitionBuffer) []Message {
 
 // ─── Flush / Stats ────────────────────────────────────────────────────────────
 
-// Flush waits for batches queued before its barrier and reports any permanent
-// delivery failure observed by those senders.
 func (p *Producer) Flush() error {
 	timeout := p.flushTimeout()
 

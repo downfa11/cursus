@@ -97,8 +97,6 @@ func (pc *ProducerClient) connectPartitionLocked(idx int, addr string) error {
 	return nil
 }
 
-// ConnectToAddr establishes a fully configured SDK session for bootstrap and
-// administrative requests as well as partition traffic.
 func (pc *ProducerClient) ConnectToAddr(addr string) (net.Conn, error) {
 	pc.mu.RLock()
 	defer pc.mu.RUnlock()

@@ -355,8 +355,6 @@ func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.
 		return 0, fmt.Errorf("disk handler is shutting down")
 	case d.writeCh <- diskMsg:
 	}
-	// The flush loop owns physical writes. Draining it here makes this request
-	// durable only after every earlier queued append has been written first.
 	d.Flush()
 	if err := d.writeAvailabilityError(); err != nil {
 		return 0, err

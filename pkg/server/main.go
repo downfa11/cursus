@@ -441,9 +441,6 @@ func handleConnWithContext(ctx context.Context, conn net.Conn, cmdHandler *contr
 		if err != nil {
 			var frameErr *partialFrameError
 			if errors.As(err, &frameErr) && frameErr.consumed {
-				// A deadline after any frame byte leaves the connection between
-				// framing boundaries. Do not attempt to parse the remainder as a
-				// new length prefix.
 				return
 			}
 			select {
