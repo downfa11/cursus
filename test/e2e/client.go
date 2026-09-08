@@ -3,6 +3,7 @@ package e2e
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -12,14 +13,15 @@ import (
 
 // BrokerClient wraps low-level broker communication
 type BrokerClient struct {
-	addrs         []string
-	conn          net.Conn
-	mu            sync.Mutex
-	closed        bool
-	topic         string
-	consumerGroup string
-	memberID      string // consumerID + uuid
-	generation    int
+	addrs            []string
+	conn             net.Conn
+	mu               sync.Mutex
+	closed           bool
+	topic            string
+	consumerGroup    string
+	memberID         string // consumerID + uuid
+	generation       int
+	protocolFeatures []string
 }
 
 // ConsumerGroupStatus represents consumer group metadata
@@ -42,6 +44,21 @@ type MemberInfo struct {
 func NewBrokerClient(addrs []string) *BrokerClient {
 	return &BrokerClient{
 		addrs: addrs,
+	}
+}
+
+func (bc *BrokerClient) EnableProtocolFeatures(features ...string) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	next := append([]string(nil), features...)
+	sort.Strings(next)
+	if strings.Join(next, ",") == strings.Join(bc.protocolFeatures, ",") {
+		return
+	}
+	bc.protocolFeatures = next
+	if bc.conn != nil {
+		_ = bc.conn.Close()
+		bc.conn = nil
 	}
 }
 
@@ -88,6 +105,11 @@ func (bc *BrokerClient) connect() error {
 	for _, addr := range bc.addrs {
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err == nil {
+			if err := bc.negotiateConnection(conn); err != nil {
+				_ = conn.Close()
+				lastErr = err
+				continue
+			}
 			bc.conn = conn
 			bc.closed = false
 			return nil
@@ -96,6 +118,27 @@ func (bc *BrokerClient) connect() error {
 	}
 
 	return fmt.Errorf("failed to connect to any broker in %v: %w", bc.addrs, lastErr)
+}
+
+func (bc *BrokerClient) negotiateConnection(conn net.Conn) error {
+	if len(bc.protocolFeatures) == 0 {
+		return nil
+	}
+	cmd := fmt.Sprintf("NEGOTIATE version=1 features=%s require_features=true", strings.Join(bc.protocolFeatures, ","))
+	if err := util.WriteWithLength(conn, util.EncodeMessage("", cmd)); err != nil {
+		return fmt.Errorf("write protocol negotiation: %w", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	response, err := util.ReadWithLength(conn)
+	if err != nil {
+		return fmt.Errorf("read protocol negotiation: %w", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(response)), "OK ") {
+		return fmt.Errorf("protocol negotiation failed: %s", strings.TrimSpace(string(response)))
+	}
+	return nil
 }
 
 func (bc *BrokerClient) rotateAddrs() {

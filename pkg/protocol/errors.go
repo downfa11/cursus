@@ -101,7 +101,7 @@ func buildErrorRegistry() map[string]ErrorClassification {
 		"missing_broker", "missing_leader_fence", "missing_member", "missing_message", "missing_offset", "missing_partition", "missing_payload",
 		"missing_coordinator_key", "missing_ownership_params", "missing_producer_id", "missing_protocol_version",
 		"missing_required_params", "missing_topic", "missing_transactional_id",
-		"missing_version", "no_valid_offsets", "unknown_command", "unmarshal_failed",
+		"consumer_group_subscriptions_feature_required", "group_epoch_mismatch", "invalid_group_epoch", "invalid_subscription", "missing_version", "no_valid_offsets", "transaction_not_open", "transactional_processing_feature_required", "unknown_command", "unmarshal_failed",
 	)
 	register(ErrorClassInternal, false,
 		"append_stream_failed", "broker_error", "command_failed", "coordinator_error", "create_topic_failed",

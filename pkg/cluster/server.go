@@ -13,8 +13,9 @@ import (
 )
 
 type joinRequest struct {
-	NodeID  string `json:"node_id"`
-	Address string `json:"address"`
+	NodeID                       string `json:"node_id"`
+	Address                      string `json:"address"`
+	TransactionCoordinatorShards int    `json:"transaction_coordinator_shards,omitempty"`
 }
 
 type joinResponse struct {
@@ -155,7 +156,15 @@ func (h *ClusterServer) handleJoinCluster(conn net.Conn, payload string) {
 		return
 	}
 
-	leader, err := h.sd.AddNode(req.NodeID, req.Address)
+	var leader string
+	var err error
+	if extended, ok := h.sd.(interface {
+		AddNodeWithTransactionCoordinatorShards(string, string, int) (string, error)
+	}); ok {
+		leader, err = extended.AddNodeWithTransactionCoordinatorShards(req.NodeID, req.Address, req.TransactionCoordinatorShards)
+	} else {
+		leader, err = h.sd.AddNode(req.NodeID, req.Address)
+	}
 	if err != nil {
 		resp := joinResponse{
 			Success: false,

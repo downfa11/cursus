@@ -194,6 +194,9 @@ These values participate in active broker behavior:
 | `internal_auth_token` | empty | Shared internal command credential; required unless mTLS identity is authoritative. |
 | `internal_use_tls` | false | Enables broker-internal TLS and client-certificate verification. |
 | `transactional_id_expiration_ms` | 604800000 | Retention for completed transaction payloads. Epoch tombstones remain for fencing; active transactions are not expired. |
+| `transaction_timeout_ms` | 60000 | Maximum duration of an open broker transaction before durable timeout abort. |
+| `transaction_coordinator_shards` | 50 | Logical transaction-coordinator shard count. Immutable after cluster creation. |
+| `transaction_recovery_batch_size` | 256 | Maximum prepared or timed-out transactions handled per recovery batch. |
 | `producer_state_ttl_ms` | 1800000 | In-memory producer state cleanup window; durable records/checkpoints remain recovery sources. |
 
 Distribution is disabled by default. Production clusters should use a dedicated internal listener, mTLS, least-privilege client users, and explicit advertised addresses.
@@ -308,6 +311,9 @@ The Config struct uses both YAML and JSON tags to support both formats. Here's h
 | EnableSASL                 | `enable_sasl`                | `sasl.enable`                 | --enable-sasl            |
 | ProducerStateTTLMS        | `producer_state_ttl_ms`      | `producer.state.ttl.ms`       | --producer-state-ttl-ms  |
 | TransactionalIDExpirationMS | `transactional_id_expiration_ms` | `transactional.id.expiration.ms` | --transactional-id-expiration-ms |
+| TransactionTimeoutMS       | `transaction_timeout_ms`       | `transaction.timeout.ms`       | --transaction-timeout-ms    |
+| TransactionCoordinatorShards | `transaction_coordinator_shards` | `transaction.coordinator.shards` | --transaction-coordinator-shards |
+| TransactionRecoveryBatchSize | `transaction_recovery_batch_size` | `transaction.recovery.batch.size` | --transaction-recovery-batch-size |
 | DiskFlushBatchSize        | `disk_flush_batch_size`      | `disk.flush.batch.size`       | --disk-flush-batch       |
 | LingerMS                  | `linger_ms`                  | `linger.ms`                   | --linger-ms              |
 | ChannelBufferSize         | `channel_buffer_size`        | `channel.buffer.size`         | --channel-buffer         |

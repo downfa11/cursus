@@ -2,23 +2,49 @@ package transaction
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
-	"sync"
 	"time"
 
 	"github.com/cursus-io/cursus/pkg/types"
 )
 
+const DefaultCoordinatorShardCount = 50
+
+// CoordinatorShard maps a transactional ID to a stable logical coordinator
+// shard. Shard ownership may move between brokers, but the mapping itself does
+// not change with cluster membership.
+func CoordinatorShard(transactionalID string) int {
+	return CoordinatorShardForCount(transactionalID, DefaultCoordinatorShardCount)
+}
+
+// CoordinatorShardForCount maps a transactional ID using the cluster's
+// immutable logical coordinator shard count.
+func CoordinatorShardForCount(transactionalID string, shardCount int) int {
+	if shardCount <= 0 {
+		shardCount = DefaultCoordinatorShardCount
+	}
+	digest := sha256.Sum256([]byte(transactionalID))
+	return int(binary.BigEndian.Uint64(digest[:8]) % uint64(shardCount))
+}
+
 type State string
 
+type Mode string
+
 const (
-	StateOpen       State = "open"
-	StateCommitting State = "committing"
-	StateCommitted  State = "committed"
-	StateAborted    State = "aborted"
+	StateOpen          State = "open"
+	StateCommitting    State = "committing"
+	StatePrepareCommit State = "prepare_commit"
+	StatePrepareAbort  State = "prepare_abort"
+	StateCommitted     State = "committed"
+	StateAborted       State = "aborted"
+
+	ModeLegacy       Mode = "legacy"
+	ModeProcessingV1 Mode = "transactional_processing_v1"
 )
 
 var ErrProducerReinitializationRequired = errors.New("producer reinitialization required")
@@ -30,45 +56,58 @@ type MessageOperation struct {
 }
 
 type OffsetOperation struct {
-	Topic      string
-	Group      string
-	Member     string
-	Generation int
-	Partition  int
-	Offset     uint64
+	Topic             string
+	Group             string
+	Member            string
+	Generation        int
+	Partition         int
+	Offset            uint64
+	RegistrationEpoch uint64 `json:"registration_epoch,omitempty"`
+}
+
+type Participant struct {
+	Topic     string `json:"topic"`
+	Partition int    `json:"partition"`
 }
 
 type Transaction struct {
-	ID        string
-	Producer  string
-	Epoch     int64
-	Revision  uint64
-	Ready     bool
-	Expired   bool
-	State     State
-	Messages  []MessageOperation
-	Offsets   []OffsetOperation
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID               string
+	Mode             Mode
+	Producer         string
+	Epoch            int64
+	CoordinatorEpoch int64
+	Revision         uint64
+	Ready            bool
+	Expired          bool
+	State            State
+	Messages         []MessageOperation
+	Offsets          []OffsetOperation
+	Participants     []Participant
+	Deadline         time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type Snapshot struct {
-	ID        string             `json:"id"`
-	Producer  string             `json:"producer"`
-	Epoch     int64              `json:"epoch"`
-	Revision  uint64             `json:"revision,omitempty"`
-	Ready     bool               `json:"ready,omitempty"`
-	Expired   bool               `json:"expired,omitempty"`
-	State     State              `json:"state"`
-	Messages  []MessageOperation `json:"messages,omitempty"`
-	Offsets   []OffsetOperation  `json:"offsets,omitempty"`
-	CreatedAt time.Time          `json:"created_at"`
-	UpdatedAt time.Time          `json:"updated_at"`
+	ID               string             `json:"id"`
+	Mode             Mode               `json:"mode,omitempty"`
+	Producer         string             `json:"producer"`
+	Epoch            int64              `json:"epoch"`
+	CoordinatorEpoch int64              `json:"coordinator_epoch,omitempty"`
+	Revision         uint64             `json:"revision,omitempty"`
+	Ready            bool               `json:"ready,omitempty"`
+	Expired          bool               `json:"expired,omitempty"`
+	State            State              `json:"state"`
+	Messages         []MessageOperation `json:"messages,omitempty"`
+	Offsets          []OffsetOperation  `json:"offsets,omitempty"`
+	Participants     []Participant      `json:"participants,omitempty"`
+	Deadline         time.Time          `json:"deadline,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
 }
 
 type Manager struct {
-	mu         sync.Mutex
-	txns       map[string]*Transaction
+	shards     []managerShard
 	expiration time.Duration
 }
 
@@ -77,40 +116,47 @@ func NewManager() *Manager {
 }
 
 func NewManagerWithExpiration(expiration time.Duration) *Manager {
+	return NewManagerWithExpirationAndShards(expiration, DefaultCoordinatorShardCount)
+}
+
+func NewManagerWithExpirationAndShards(expiration time.Duration, shardCount int) *Manager {
 	if expiration <= 0 {
 		expiration = 7 * 24 * time.Hour
 	}
-	return &Manager{txns: make(map[string]*Transaction), expiration: expiration}
+	if shardCount <= 0 {
+		shardCount = DefaultCoordinatorShardCount
+	}
+	m := &Manager{shards: make([]managerShard, shardCount), expiration: expiration}
+	for i := range m.shards {
+		m.shards[i] = newManagerShard(expiration)
+	}
+	return m
 }
 
 func (m *Manager) PruneExpired(now time.Time) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.pruneExpiredLocked(now)
-}
-
-func (m *Manager) pruneExpiredLocked(now time.Time) int {
 	if m.expiration <= 0 {
 		return 0
 	}
-	cutoff := now.Add(-m.expiration)
 	removed := 0
-	for id, tx := range m.txns {
-		if tx == nil {
-			delete(m.txns, id)
-			removed++
-			continue
-		}
-		if tx.Expired {
-			if tx.UpdatedAt.Before(cutoff) {
-				delete(m.txns, id)
+	for i := range m.shards {
+		s := &m.shards[i]
+		s.mu.Lock()
+		for len(s.expirations) > 0 && s.expirations[0].deadline.Before(now) {
+			id := s.expirations[0].id
+			tx := s.txns[id]
+			if tx == nil || tx.Expired {
+				s.remove(id)
 				removed++
+				continue
 			}
-			continue
+			if expireTransactionLocked(tx, now.Add(-m.expiration), now) {
+				s.reindex(tx)
+				removed++
+				continue
+			}
+			s.reindex(tx)
 		}
-		if expireTransactionLocked(tx, cutoff, now) {
-			removed++
-		}
+		s.mu.Unlock()
 	}
 	return removed
 }
@@ -132,21 +178,29 @@ func expireTransactionLocked(tx *Transaction, cutoff, now time.Time) bool {
 }
 
 func (m *Manager) InitProducer(id string) (string, int64, error) {
+	return m.InitProducerWithMode(id, ModeLegacy)
+}
+
+func (m *Manager) InitProducerWithMode(id string, mode Mode) (string, int64, error) {
 	if id == "" {
 		return "", 0, fmt.Errorf("missing transaction id")
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := time.Now()
-	previous := m.txns[id]
+	if mode == "" {
+		mode = ModeLegacy
+	}
+	previous := s.txns[id]
 	expireTransactionLocked(previous, now.Add(-m.expiration), now)
 
 	producer := producerIDForTransactionalID(id)
 	epoch := int64(0)
 	revision := uint64(1)
 	if tx := previous; tx != nil {
-		if tx.State == StateCommitting {
+		if tx.State == StateCommitting || tx.State == StatePrepareCommit || tx.State == StatePrepareAbort {
 			return "", 0, fmt.Errorf("transaction %s is committing; retry END_TXN before reinitializing producer", id)
 		}
 		if tx.Producer != "" {
@@ -156,19 +210,64 @@ func (m *Manager) InitProducer(id string) (string, int64, error) {
 		revision = tx.Revision + 1
 	}
 
-	m.txns[id] = &Transaction{
-		ID:        id,
-		Producer:  producer,
-		Epoch:     epoch,
-		Revision:  revision,
-		Ready:     true,
-		State:     StateAborted,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
+	s.put(&Transaction{
+		ID:               id,
+		Mode:             mode,
+		Producer:         producer,
+		Epoch:            epoch,
+		CoordinatorEpoch: epoch,
+		Revision:         revision,
+		Ready:            true,
+		State:            StateAborted,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	})
 	return producer, epoch, nil
 }
+
+// SetCoordinatorEpoch attaches the durable coordinator-shard epoch to a newly
+// initialized v1 transaction before it is replicated.
+func (m *Manager) SetCoordinatorEpoch(id string, epoch int64) error {
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, ok := s.txns[id]
+	if !ok {
+		return fmt.Errorf("transaction %s not found", id)
+	}
+	if tx.Mode != ModeProcessingV1 {
+		return nil
+	}
+	if epoch <= 0 {
+		return fmt.Errorf("invalid coordinator epoch %d", epoch)
+	}
+	tx.CoordinatorEpoch = epoch
+	return nil
+}
+
+// ReconcileCoordinatorEpochs fences local v1 state after ownership of a shard
+// changes in the replicated cluster registry. It deliberately leaves producer
+// epochs and transaction revisions unchanged.
+func (m *Manager) ReconcileCoordinatorEpochs(epochs map[int]int64, shardCount int) {
+	for shardID, epoch := range epochs {
+		if shardID < 0 || shardID >= len(m.shards) || epoch <= 0 {
+			continue
+		}
+		s := &m.shards[shardID]
+		s.mu.Lock()
+		for id := range s.nonTerminal {
+			if tx := s.txns[id]; tx != nil && tx.Mode == ModeProcessingV1 {
+				tx.CoordinatorEpoch = epoch
+			}
+		}
+		s.mu.Unlock()
+	}
+}
 func (m *Manager) Begin(id, producer string, epoch int64) error {
+	return m.BeginWithDeadline(id, producer, epoch, time.Time{})
+}
+
+func (m *Manager) BeginWithDeadline(id, producer string, epoch int64, deadline time.Time) error {
 	if id == "" {
 		return fmt.Errorf("missing transaction id")
 	}
@@ -176,10 +275,11 @@ func (m *Manager) Begin(id, producer string, epoch int64) error {
 		return fmt.Errorf("missing transactional producer")
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, ok := m.txns[id]
+	tx, ok := s.txns[id]
 	if !ok || tx.Expired {
 		return fmt.Errorf("transaction %s is not initialized; call INIT_PRODUCER_ID first", id)
 	}
@@ -200,24 +300,60 @@ func (m *Manager) Begin(id, producer string, epoch int64) error {
 	}
 
 	now := time.Now()
-	m.txns[id] = &Transaction{
-		ID:        id,
-		Producer:  producer,
-		Epoch:     epoch,
-		Revision:  tx.Revision + 1,
-		Ready:     false,
-		State:     StateOpen,
-		CreatedAt: now,
-		UpdatedAt: now,
+	s.put(&Transaction{
+		ID:               id,
+		Mode:             tx.Mode,
+		Producer:         producer,
+		Epoch:            epoch,
+		CoordinatorEpoch: tx.CoordinatorEpoch,
+		Revision:         tx.Revision + 1,
+		Ready:            false,
+		State:            StateOpen,
+		Deadline:         deadline,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	})
+	return nil
+}
+
+func (m *Manager) AddParticipant(id, producer string, epoch int64, participant Participant, deadline time.Time) error {
+	if participant.Topic == "" || participant.Partition < 0 {
+		return fmt.Errorf("invalid transaction participant")
 	}
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := activeLocked(s, id)
+	if err != nil {
+		return err
+	}
+	if err := validateOwner(tx, producer, epoch); err != nil {
+		return err
+	}
+	if tx.Mode != ModeProcessingV1 {
+		return fmt.Errorf("transaction %s does not use transactional processing v1", id)
+	}
+	for _, existing := range tx.Participants {
+		if existing == participant {
+			return nil
+		}
+	}
+	tx.Participants = append(tx.Participants, participant)
+	if tx.Deadline.IsZero() && !deadline.IsZero() {
+		tx.Deadline = deadline
+	}
+	tx.Revision++
+	tx.UpdatedAt = time.Now()
+	s.reindex(tx)
 	return nil
 }
 
 func (m *Manager) AddMessage(id, producer string, epoch int64, op MessageOperation) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, err := m.activeLocked(id)
+	tx, err := activeLocked(s, id)
 	if err != nil {
 		return err
 	}
@@ -235,10 +371,11 @@ func (m *Manager) AddOffsets(id, producer string, epoch int64, offsets []OffsetO
 		return fmt.Errorf("no offsets supplied")
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, err := m.activeLocked(id)
+	tx, err := activeLocked(s, id)
 	if err != nil {
 		return err
 	}
@@ -250,10 +387,11 @@ func (m *Manager) AddOffsets(id, producer string, epoch int64, offsets []OffsetO
 		scope = tx.Offsets[0]
 	}
 	for _, op := range offsets {
-		if op.Topic != scope.Topic || op.Group != scope.Group || op.Member != scope.Member || op.Generation != scope.Generation {
+		topicMismatch := op.Topic != scope.Topic && tx.Mode != ModeProcessingV1
+		if topicMismatch || op.Group != scope.Group || op.Member != scope.Member || op.Generation != scope.Generation || op.RegistrationEpoch != scope.RegistrationEpoch {
 			return fmt.Errorf(
-				"transaction offset scope mismatch: expected topic=%s group=%s member=%s generation=%d",
-				scope.Topic, scope.Group, scope.Member, scope.Generation,
+				"transaction offset scope mismatch: expected topic=%s group=%s member=%s generation=%d registration_epoch=%d",
+				scope.Topic, scope.Group, scope.Member, scope.Generation, scope.RegistrationEpoch,
 			)
 		}
 	}
@@ -285,10 +423,11 @@ func (m *Manager) AddOffsets(id, producer string, epoch int64, offsets []OffsetO
 }
 
 func (m *Manager) PrepareCommit(id, producer string, epoch int64) (*Transaction, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, ok := m.txns[id]
+	tx, ok := s.txns[id]
 	if !ok {
 		return nil, fmt.Errorf("transaction %s not found", id)
 	}
@@ -297,11 +436,16 @@ func (m *Manager) PrepareCommit(id, producer string, epoch int64) (*Transaction,
 	}
 	switch tx.State {
 	case StateOpen:
-		tx.State = StateCommitting
+		if tx.Mode == ModeProcessingV1 {
+			tx.State = StatePrepareCommit
+		} else {
+			tx.State = StateCommitting
+		}
 		tx.Revision++
 		tx.UpdatedAt = time.Now()
+		s.reindex(tx)
 		return clone(tx), nil
-	case StateCommitting:
+	case StateCommitting, StatePrepareCommit:
 		return clone(tx), nil
 	case StateCommitted:
 		return clone(tx), nil
@@ -313,27 +457,57 @@ func (m *Manager) PrepareCommit(id, producer string, epoch int64) (*Transaction,
 }
 
 func (m *Manager) Commit(id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, ok := m.txns[id]
+	tx, ok := s.txns[id]
 	if !ok {
 		return fmt.Errorf("transaction %s not found", id)
 	}
-	if tx.State != StateCommitting {
+	if tx.State != StateCommitting && tx.State != StatePrepareCommit {
 		return fmt.Errorf("transaction %s is not prepared for commit", id)
 	}
 	tx.State = StateCommitted
 	tx.Revision++
 	tx.UpdatedAt = time.Now()
+	s.reindex(tx)
 	return nil
 }
 
-func (m *Manager) Abort(id, producer string, epoch int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Manager) PrepareAbort(id, producer string, epoch int64) (*Transaction, error) {
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, ok := s.txns[id]
+	if !ok {
+		return nil, fmt.Errorf("transaction %s not found", id)
+	}
+	if err := validateOwner(tx, producer, epoch); err != nil {
+		return nil, err
+	}
+	switch tx.State {
+	case StateOpen:
+		tx.State = StatePrepareAbort
+		tx.Revision++
+		tx.UpdatedAt = time.Now()
+		s.reindex(tx)
+		return clone(tx), nil
+	case StatePrepareAbort, StateAborted:
+		return clone(tx), nil
+	case StatePrepareCommit, StateCommitting, StateCommitted:
+		return nil, fmt.Errorf("transaction %s cannot be aborted from state %s", id, tx.State)
+	default:
+		return nil, fmt.Errorf("transaction %s cannot be aborted from state %s", id, tx.State)
+	}
+}
 
-	tx, ok := m.txns[id]
+func (m *Manager) Abort(id, producer string, epoch int64) error {
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, ok := s.txns[id]
 	if !ok {
 		return fmt.Errorf("transaction %s not found", id)
 	}
@@ -346,7 +520,7 @@ func (m *Manager) Abort(id, producer string, epoch int64) error {
 	if tx.State == StateAborted {
 		return nil
 	}
-	if tx.State == StateCommitting {
+	if tx.State == StateCommitting || tx.State == StatePrepareCommit || tx.State == StatePrepareAbort {
 		return fmt.Errorf("transaction %s cannot be aborted from state %s", id, tx.State)
 	}
 	tx.State = StateAborted
@@ -354,14 +528,16 @@ func (m *Manager) Abort(id, producer string, epoch int64) error {
 	tx.Offsets = nil
 	tx.Revision++
 	tx.UpdatedAt = time.Now()
+	s.reindex(tx)
 	return nil
 }
 
 func (m *Manager) ValidateOwner(id, producer string, epoch int64) (*Transaction, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, ok := m.txns[id]
+	tx, ok := s.txns[id]
 	if !ok {
 		return nil, fmt.Errorf("transaction %s not found", id)
 	}
@@ -371,39 +547,68 @@ func (m *Manager) ValidateOwner(id, producer string, epoch int64) (*Transaction,
 	return clone(tx), nil
 }
 func (m *Manager) Status(id string) (*Transaction, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, ok := m.txns[id]
+	tx, ok := s.txns[id]
 	if !ok || tx.Expired {
 		return nil, fmt.Errorf("transaction %s not found", id)
 	}
 	return clone(tx), nil
 }
 
-func (m *Manager) TransactionDecision(id string, epoch int64) (string, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Manager) Snapshot(id string) (*Snapshot, bool) {
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, ok := s.txns[id]
+	if !ok {
+		return nil, false
+	}
+	return snapshot(tx), true
+}
 
-	tx, ok := m.txns[id]
+func (m *Manager) TransactionDecision(id string, epoch int64) (string, bool) {
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, ok := s.txns[id]
 	if !ok || tx.Expired || tx.Epoch != epoch {
 		return "", false
 	}
 	return string(tx.State), true
 }
 
-func (m *Manager) BuildCommittedSnapshot(id string) (*Snapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Manager) TransactionDecisionWithCoordinatorEpoch(id string, epoch int64) (string, int64, bool) {
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, ok := m.txns[id]
+	tx, ok := s.txns[id]
+	if !ok || tx.Expired || tx.Epoch != epoch {
+		return "", 0, false
+	}
+	if tx.Mode != ModeProcessingV1 {
+		return string(tx.State), 0, true
+	}
+	return string(tx.State), tx.CoordinatorEpoch, true
+}
+
+func (m *Manager) BuildCommittedSnapshot(id string) (*Snapshot, error) {
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, ok := s.txns[id]
 	if !ok {
 		return nil, fmt.Errorf("transaction %s not found", id)
 	}
 	switch tx.State {
 	case StateCommitted:
 		return snapshot(tx), nil
-	case StateCommitting:
+	case StateCommitting, StatePrepareCommit:
 	default:
 		return nil, fmt.Errorf("transaction %s is not prepared for commit", id)
 	}
@@ -414,10 +619,11 @@ func (m *Manager) BuildCommittedSnapshot(id string) (*Snapshot, error) {
 	return committed, nil
 }
 func (m *Manager) BuildAbortedSnapshot(id, producer string, epoch int64) (*Snapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	tx, ok := m.txns[id]
+	tx, ok := s.txns[id]
 	if !ok {
 		return nil, fmt.Errorf("transaction %s not found", id)
 	}
@@ -429,9 +635,9 @@ func (m *Manager) BuildAbortedSnapshot(id, producer string, epoch int64) (*Snaps
 		return nil, fmt.Errorf("transaction %s is already committed", id)
 	case StateAborted:
 		return snapshot(tx), nil
-	case StateCommitting:
+	case StateCommitting, StatePrepareCommit:
 		return nil, fmt.Errorf("transaction %s cannot be aborted from state %s", id, tx.State)
-	case StateOpen:
+	case StateOpen, StatePrepareAbort:
 		aborted := snapshot(tx)
 		aborted.State = StateAborted
 		aborted.Revision++
@@ -448,41 +654,62 @@ func (m *Manager) TransactionsByState(states ...State) []*Transaction {
 		wanted[state] = struct{}{}
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	out := make([]*Transaction, 0)
-	for _, tx := range m.txns {
-		if tx.Expired {
-			continue
+	for i := range m.shards {
+		s := &m.shards[i]
+		s.mu.Lock()
+		for _, tx := range s.txns {
+			if tx.Expired {
+				continue
+			}
+			if _, ok := wanted[tx.State]; ok {
+				out = append(out, clone(tx))
+			}
 		}
-		if _, ok := wanted[tx.State]; ok {
-			out = append(out, clone(tx))
-		}
+		s.mu.Unlock()
 	}
 	return out
 }
 func (m *Manager) ExportState() map[string]*Snapshot {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	out := make(map[string]*Snapshot, len(m.txns))
-	for id, tx := range m.txns {
-		out[id] = snapshot(tx)
+	for i := range m.shards {
+		m.shards[i].mu.Lock()
+	}
+	defer func() {
+		for i := len(m.shards) - 1; i >= 0; i-- {
+			m.shards[i].mu.Unlock()
+		}
+	}()
+	out := make(map[string]*Snapshot)
+	for i := range m.shards {
+		for id, tx := range m.shards[i].txns {
+			out[id] = snapshot(tx)
+		}
 	}
 	return out
 }
 
 func (m *Manager) ImportState(state map[string]*Snapshot) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.txns = make(map[string]*Transaction, len(state))
+	for i := range m.shards {
+		m.shards[i].mu.Lock()
+		m.shards[i].txns = make(map[string]*Transaction)
+		m.shards[i].prepared = make(map[string]struct{})
+		m.shards[i].nonTerminal = make(map[string]struct{})
+		m.shards[i].deadlines = nil
+		m.shards[i].deadlineByID = make(map[string]*deadlineItem)
+		m.shards[i].expirations = nil
+		m.shards[i].expiryByID = make(map[string]*deadlineItem)
+	}
+	defer func() {
+		for i := len(m.shards) - 1; i >= 0; i-- {
+			m.shards[i].mu.Unlock()
+		}
+	}()
 	for id, snap := range state {
 		if snap == nil {
 			continue
 		}
-		m.txns[id] = transactionFromSnapshot(snap)
+		tx := transactionFromSnapshot(snap)
+		m.shards[CoordinatorShardForCount(id, len(m.shards))].put(tx)
 	}
 }
 
@@ -490,21 +717,23 @@ func (m *Manager) ApplySnapshot(snap *Snapshot) {
 	if snap == nil || snap.ID == "" {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.txns[snap.ID] = transactionFromSnapshot(snap)
+	s := m.shardForID(snap.ID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.put(transactionFromSnapshot(snap))
 }
 
 func (m *Manager) ApplyReplicatedSnapshot(snap *Snapshot) error {
 	if snap == nil || snap.ID == "" {
 		return fmt.Errorf("invalid transaction snapshot")
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shardForID(snap.ID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	current, ok := m.txns[snap.ID]
+	current, ok := s.txns[snap.ID]
 	if !ok || snapshotIsNewer(current, snap) {
-		m.txns[snap.ID] = transactionFromSnapshot(snap)
+		s.put(transactionFromSnapshot(snap))
 		return nil
 	}
 	if snapshotsEqual(current, snap) {
@@ -523,16 +752,20 @@ func (m *Manager) ApplyReplicatedSnapshot(snap *Snapshot) error {
 func committedSnapshotSucceeds(current *Transaction, incoming *Snapshot) bool {
 	return current != nil && incoming != nil &&
 		current.ID == incoming.ID &&
+		current.Mode == normalizeMode(incoming.Mode) &&
 		current.Producer == incoming.Producer &&
 		current.Epoch == incoming.Epoch &&
+		current.CoordinatorEpoch == incoming.CoordinatorEpoch &&
 		current.State == StateCommitted &&
-		incoming.State == StateCommitting &&
+		(incoming.State == StateCommitting || incoming.State == StatePrepareCommit) &&
 		current.Revision == incoming.Revision+1 &&
 		current.Ready == incoming.Ready &&
 		current.Expired == incoming.Expired &&
 		current.CreatedAt.Equal(incoming.CreatedAt) &&
 		reflect.DeepEqual(current.Messages, incoming.Messages) &&
-		reflect.DeepEqual(current.Offsets, incoming.Offsets)
+		reflect.DeepEqual(current.Offsets, incoming.Offsets) &&
+		reflect.DeepEqual(current.Participants, incoming.Participants) &&
+		current.Deadline.Equal(incoming.Deadline)
 }
 
 func snapshotIsNewer(current *Transaction, incoming *Snapshot) bool {
@@ -550,8 +783,10 @@ func snapshotIsNewer(current *Transaction, incoming *Snapshot) bool {
 
 func snapshotsEqual(current *Transaction, incoming *Snapshot) bool {
 	return current.ID == incoming.ID &&
+		current.Mode == normalizeMode(incoming.Mode) &&
 		current.Producer == incoming.Producer &&
 		current.Epoch == incoming.Epoch &&
+		current.CoordinatorEpoch == incoming.CoordinatorEpoch &&
 		current.Revision == incoming.Revision &&
 		current.Ready == incoming.Ready &&
 		current.Expired == incoming.Expired &&
@@ -559,17 +794,20 @@ func snapshotsEqual(current *Transaction, incoming *Snapshot) bool {
 		current.CreatedAt.Equal(incoming.CreatedAt) &&
 		current.UpdatedAt.Equal(incoming.UpdatedAt) &&
 		reflect.DeepEqual(current.Messages, incoming.Messages) &&
-		reflect.DeepEqual(current.Offsets, incoming.Offsets)
+		reflect.DeepEqual(current.Offsets, incoming.Offsets) &&
+		reflect.DeepEqual(current.Participants, incoming.Participants) &&
+		current.Deadline.Equal(incoming.Deadline)
 }
 
 func (m *Manager) Delete(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.txns, id)
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remove(id)
 }
 
-func (m *Manager) activeLocked(id string) (*Transaction, error) {
-	tx, ok := m.txns[id]
+func activeLocked(s *managerShard, id string) (*Transaction, error) {
+	tx, ok := s.txns[id]
 	if !ok {
 		return nil, fmt.Errorf("transaction %s not found", id)
 	}
@@ -602,6 +840,7 @@ func clone(tx *Transaction) *Transaction {
 	out := *tx
 	out.Messages = append([]MessageOperation(nil), tx.Messages...)
 	out.Offsets = append([]OffsetOperation(nil), tx.Offsets...)
+	out.Participants = append([]Participant(nil), tx.Participants...)
 	return &out
 }
 
@@ -610,34 +849,49 @@ func snapshot(tx *Transaction) *Snapshot {
 		return nil
 	}
 	return &Snapshot{
-		ID:        tx.ID,
-		Producer:  tx.Producer,
-		Epoch:     tx.Epoch,
-		Revision:  tx.Revision,
-		Ready:     tx.Ready,
-		Expired:   tx.Expired,
-		State:     tx.State,
-		Messages:  append([]MessageOperation(nil), tx.Messages...),
-		Offsets:   append([]OffsetOperation(nil), tx.Offsets...),
-		CreatedAt: tx.CreatedAt,
-		UpdatedAt: tx.UpdatedAt,
+		ID:               tx.ID,
+		Mode:             tx.Mode,
+		Producer:         tx.Producer,
+		Epoch:            tx.Epoch,
+		CoordinatorEpoch: tx.CoordinatorEpoch,
+		Revision:         tx.Revision,
+		Ready:            tx.Ready,
+		Expired:          tx.Expired,
+		State:            tx.State,
+		Messages:         append([]MessageOperation(nil), tx.Messages...),
+		Offsets:          append([]OffsetOperation(nil), tx.Offsets...),
+		Participants:     append([]Participant(nil), tx.Participants...),
+		Deadline:         tx.Deadline,
+		CreatedAt:        tx.CreatedAt,
+		UpdatedAt:        tx.UpdatedAt,
 	}
 }
 
 func transactionFromSnapshot(snap *Snapshot) *Transaction {
 	return &Transaction{
-		ID:        snap.ID,
-		Producer:  snap.Producer,
-		Epoch:     snap.Epoch,
-		Revision:  snap.Revision,
-		Ready:     snap.Ready,
-		Expired:   snap.Expired,
-		State:     snap.State,
-		Messages:  append([]MessageOperation(nil), snap.Messages...),
-		Offsets:   append([]OffsetOperation(nil), snap.Offsets...),
-		CreatedAt: snap.CreatedAt,
-		UpdatedAt: snap.UpdatedAt,
+		ID:               snap.ID,
+		Mode:             normalizeMode(snap.Mode),
+		Producer:         snap.Producer,
+		Epoch:            snap.Epoch,
+		CoordinatorEpoch: snap.CoordinatorEpoch,
+		Revision:         snap.Revision,
+		Ready:            snap.Ready,
+		Expired:          snap.Expired,
+		State:            snap.State,
+		Messages:         append([]MessageOperation(nil), snap.Messages...),
+		Offsets:          append([]OffsetOperation(nil), snap.Offsets...),
+		Participants:     append([]Participant(nil), snap.Participants...),
+		Deadline:         snap.Deadline,
+		CreatedAt:        snap.CreatedAt,
+		UpdatedAt:        snap.UpdatedAt,
 	}
+}
+
+func normalizeMode(mode Mode) Mode {
+	if mode == "" {
+		return ModeLegacy
+	}
+	return mode
 }
 
 func producerIDForTransactionalID(id string) string {

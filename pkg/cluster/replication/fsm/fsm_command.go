@@ -9,6 +9,7 @@ import (
 
 	"github.com/cursus-io/cursus/pkg/config"
 	"github.com/cursus-io/cursus/pkg/topic"
+	"github.com/cursus-io/cursus/pkg/transaction"
 	"github.com/cursus-io/cursus/util"
 )
 
@@ -348,13 +349,16 @@ func (f *BrokerFSM) applyJoinGroupCommand(jsonData string) interface{} {
 
 func (f *BrokerFSM) applyGroupSyncCommand(jsonData string) interface{} {
 	var cmd struct {
-		Type           string   `json:"type"`
-		Group          string   `json:"group"`
-		Member         string   `json:"member"`
-		Members        []string `json:"members"`
-		Topic          string   `json:"topic"`
-		Generation     *int     `json:"generation"`
-		PartitionCount int      `json:"partition_count"`
+		Type            string         `json:"type"`
+		Group           string         `json:"group"`
+		Member          string         `json:"member"`
+		Members         []string       `json:"members"`
+		Topic           string         `json:"topic"`
+		Generation      *int           `json:"generation"`
+		PartitionCount  int            `json:"partition_count"`
+		Topics          []string       `json:"topics"`
+		TopicPattern    string         `json:"topic_pattern"`
+		PartitionCounts map[string]int `json:"partition_counts"`
 	}
 
 	if err := json.Unmarshal([]byte(jsonData), &cmd); err != nil {
@@ -368,6 +372,23 @@ func (f *BrokerFSM) applyGroupSyncCommand(jsonData string) interface{} {
 
 	switch cmd.Type {
 	case "REGISTER":
+		if len(cmd.Topics) > 0 {
+			if f.tm == nil {
+				return fmt.Errorf("topic manager not available in FSM")
+			}
+			actual := make(map[string]int, len(cmd.Topics))
+			for _, topicName := range cmd.Topics {
+				t := f.tm.GetTopic(topicName)
+				if t == nil {
+					return fmt.Errorf("topic '%s' not found during group registration", topicName)
+				}
+				actual[topicName] = len(t.Partitions)
+				if expected := cmd.PartitionCounts[topicName]; expected > 0 && expected != actual[topicName] {
+					return fmt.Errorf("partition count mismatch for topic %s: requested=%d actual=%d", topicName, expected, actual[topicName])
+				}
+			}
+			return f.cd.RegisterGroupSubscription(cmd.Group, cmd.Topics, cmd.TopicPattern, actual)
+		}
 		if f.tm == nil {
 			return fmt.Errorf("topic manager not available in FSM")
 		}
@@ -431,11 +452,29 @@ func (f *BrokerFSM) applyRegisterCommand(jsonData string) interface{} {
 		util.Error("FSM: Failed to unmarshal registration: %v", err)
 		return err
 	}
+	shardCount := info.TransactionCoordinatorShards
+	if shardCount == 0 {
+		shardCount = transaction.DefaultCoordinatorShardCount
+	}
+	// This is a registration compatibility field, not public broker metadata.
+	// The authoritative cluster value is stored separately in the FSM state.
+	info.TransactionCoordinatorShards = 0
 
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
+	if f.transactionCoordinatorShardCount == 0 {
+		f.transactionCoordinatorShardCount = shardCount
+	}
+	if shardCount != f.transactionCoordinatorShardCount {
+		clusterShardCount := f.transactionCoordinatorShardCount
+		f.mu.Unlock()
+		return fmt.Errorf("transaction coordinator shard count mismatch: broker=%s configured=%d cluster=%d", info.ID, shardCount, clusterShardCount)
+	}
 	f.brokers[info.ID] = &info
+	changed := f.reconcileTransactionCoordinatorShardsLocked()
+	f.mu.Unlock()
+	if len(changed) > 0 {
+		f.notifyTransactionCoordinatorChange(changed)
+	}
 
 	util.Info("FSM: Member %s added to registry", info.ID)
 	return nil
@@ -451,11 +490,14 @@ func (f *BrokerFSM) applyDeregisterCommand(jsonData string) interface{} {
 	}
 
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	if b, ok := f.brokers[info.ID]; ok {
 		b.Status = "inactive"
 		util.Info("FSM: Member %s marked as inactive", info.ID)
+	}
+	changed := f.reconcileTransactionCoordinatorShardsLocked()
+	f.mu.Unlock()
+	if len(changed) > 0 {
+		f.notifyTransactionCoordinatorChange(changed)
 	}
 	return nil
 }

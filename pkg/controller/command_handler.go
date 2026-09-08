@@ -2,6 +2,7 @@ package controller
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/cursus-io/cursus/pkg/config"
 	"github.com/cursus-io/cursus/pkg/coordinator"
+	wireprotocol "github.com/cursus-io/cursus/pkg/protocol"
 	"github.com/cursus-io/cursus/pkg/topic"
 	"github.com/cursus-io/cursus/util"
 )
@@ -225,20 +227,68 @@ func (ch *CommandHandler) closeEventSourcingTopic(topicName string) {
 }
 
 // handleRegisterGroup processes REGISTER_GROUP command
-func (ch *CommandHandler) handleRegisterGroup(cmd string) string {
+func (ch *CommandHandler) handleRegisterGroup(cmd string, contexts ...*ClientContext) string {
+	ctx := firstClientContext(contexts)
 	args := parseKeyValueArgs(cmd[15:])
-	topicName, ok := args["topic"]
-	if !ok || topicName == "" {
+	topicName := args["topic"]
+	topicsValue := args["topics"]
+	pattern := args["pattern"]
+	selectors := 0
+	for _, value := range []string{topicName, topicsValue, pattern} {
+		if value != "" {
+			selectors++
+		}
+	}
+	if selectors == 0 {
 		return "ERROR: missing_topic command=REGISTER_GROUP"
+	}
+	if selectors != 1 {
+		return "ERROR: invalid_subscription command=REGISTER_GROUP reason=\"specify exactly one of topic, topics, or pattern\""
 	}
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
 		return "ERROR: missing_group command=REGISTER_GROUP"
 	}
 
+	if topicsValue != "" || pattern != "" {
+		if ctx == nil || !ctx.HasFeature(wireprotocol.FeatureConsumerGroupSubscriptionsV1) {
+			return "ERROR: consumer_group_subscriptions_feature_required feature=consumer_group_subscriptions_v1"
+		}
+		var topics []string
+		if pattern != "" {
+			matched, err := ch.matchTopicPattern(pattern)
+			if err != nil {
+				return fmt.Sprintf("ERROR: invalid_subscription reason=%q", err.Error())
+			}
+			topics = matched
+		} else {
+			topics = strings.Split(topicsValue, ",")
+		}
+		partitionCounts := make(map[string]int, len(topics))
+		for _, subscribed := range topics {
+			t := ch.TopicManager.GetTopic(subscribed)
+			if t == nil {
+				return fmt.Sprintf("ERROR: topic_not_found topic=%s", subscribed)
+			}
+			partitionCounts[subscribed] = len(t.Partitions)
+		}
+		payload := map[string]interface{}{"type": "REGISTER", "group": groupName, "topics": topics, "topic_pattern": pattern, "partition_counts": partitionCounts}
+		if ch.isDistributed() {
+			if _, err := ch.applyViaLeader("GROUP_SYNC", payload); err != nil {
+				return fmt.Sprintf("ERROR: register_group_failed reason=%q", err.Error())
+			}
+		} else if ch.Coordinator != nil {
+			if err := ch.Coordinator.RegisterGroupSubscription(groupName, topics, pattern, partitionCounts); err != nil {
+				return fmt.Sprintf("ERROR: register_group_failed reason=%q", err.Error())
+			}
+		} else {
+			return "ERROR: coordinator_not_available"
+		}
+		return fmt.Sprintf("OK group=%s topics=%s pattern=%s registered=true", groupName, strings.Join(topics, ","), pattern)
+	}
+
 	t := ch.TopicManager.GetTopic(topicName)
 	if t == nil {
-		util.Warn("ch registerGroup: topic '%s' does not exist", topicName)
 		return fmt.Sprintf("ERROR: topic_not_found topic=%s", topicName)
 	}
 
@@ -267,10 +317,7 @@ func (ch *CommandHandler) handleRegisterGroup(cmd string) string {
 func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string {
 	args := parseKeyValueArgs(cmd[11:])
 
-	topicName, ok := args["topic"]
-	if !ok || topicName == "" {
-		return "ERROR: missing_topic command=JOIN_GROUP"
-	}
+	topicName := args["topic"]
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
 		return "ERROR: missing_group command=JOIN_GROUP"
@@ -278,6 +325,10 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 	consumerID, ok := args["member"]
 	if !ok || consumerID == "" {
 		return "ERROR: missing_member command=JOIN_GROUP"
+	}
+	multiTopic := topicName == "" && ch.Coordinator != nil && ch.Coordinator.GetGroup(groupName) != nil
+	if topicName == "" && (!multiTopic || ctx == nil || !ctx.HasFeature(wireprotocol.FeatureConsumerGroupSubscriptionsV1)) {
+		return "ERROR: missing_topic command=JOIN_GROUP"
 	}
 
 	if ch.isDistributed() {
@@ -289,8 +340,10 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 			return notCoordinatorResponse(coordAddr)
 		}
 	}
-	if _, topicErr := ch.resolveGroupOffsetTopic(groupName, topicName); topicErr != "" {
-		return topicErr
+	if topicName != "" {
+		if _, topicErr := ch.resolveGroupOffsetTopic(groupName, topicName); topicErr != "" {
+			return topicErr
+		}
 	}
 
 	if generationText := args["generation"]; generationText != "" {
@@ -307,6 +360,10 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 		}
 		ctx.MemberID = consumerID
 		ctx.Generation = generation
+		if multiTopic {
+			topicAssignments := ch.Coordinator.GetMemberTopicAssignments(groupName, consumerID)
+			return fmt.Sprintf("OK generation=%d member=%s topic_assignments=%s resumed=true", generation, consumerID, formatTopicAssignments(topicAssignments))
+		}
 		return fmt.Sprintf(
 			"OK generation=%d member=%s assignments=%v resumed=true",
 			generation,
@@ -372,18 +429,19 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 
 	ctx.MemberID = consumerID
 	ctx.Generation = ch.Coordinator.GetGeneration(groupName)
+	if multiTopic {
+		return fmt.Sprintf("OK generation=%d member=%s topic_assignments=%s", ctx.Generation, ctx.MemberID, formatTopicAssignments(ch.Coordinator.GetMemberTopicAssignments(groupName, consumerID)))
+	}
 	util.Info("✅ Joined group '%s' member '%s' generation '%d' with partitions: %v", groupName, ctx.MemberID, ctx.Generation, assignments)
 	return fmt.Sprintf("OK generation=%d member=%s assignments=%v", ctx.Generation, ctx.MemberID, assignments)
 }
 
 // handleSyncGroup processes SYNC_GROUP command
-func (ch *CommandHandler) handleSyncGroup(cmd string) string {
+func (ch *CommandHandler) handleSyncGroup(cmd string, contexts ...*ClientContext) string {
+	ctx := firstClientContext(contexts)
 	args := parseKeyValueArgs(cmd[11:])
 
-	topicName, ok := args["topic"]
-	if !ok || topicName == "" {
-		return "ERROR: missing_topic command=SYNC_GROUP"
-	}
+	topicName := args["topic"]
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
 		return "ERROR: missing_group command=SYNC_GROUP"
@@ -391,6 +449,10 @@ func (ch *CommandHandler) handleSyncGroup(cmd string) string {
 	memberID, ok := args["member"]
 	if !ok || memberID == "" {
 		return "ERROR: missing_member command=SYNC_GROUP"
+	}
+	multiTopic := topicName == "" && ch.Coordinator != nil && ch.Coordinator.GetGroup(groupName) != nil
+	if topicName == "" && (!multiTopic || ctx == nil || !ctx.HasFeature(wireprotocol.FeatureConsumerGroupSubscriptionsV1)) {
+		return "ERROR: missing_topic command=SYNC_GROUP"
 	}
 
 	if ch.Coordinator == nil {
@@ -406,8 +468,10 @@ func (ch *CommandHandler) handleSyncGroup(cmd string) string {
 			return notCoordinatorResponse(coordAddr)
 		}
 	}
-	if _, topicErr := ch.resolveGroupOffsetTopic(groupName, topicName); topicErr != "" {
-		return topicErr
+	if topicName != "" {
+		if _, topicErr := ch.resolveGroupOffsetTopic(groupName, topicName); topicErr != "" {
+			return topicErr
+		}
 	}
 
 	generationText := args["generation"]
@@ -422,7 +486,18 @@ func (ch *CommandHandler) handleSyncGroup(cmd string) string {
 	if syncErr != nil {
 		return formatCoordinatorError(syncErr)
 	}
+	if multiTopic {
+		return fmt.Sprintf("OK generation=%d member=%s topic_assignments=%s", generation, memberID, formatTopicAssignments(ch.Coordinator.GetMemberTopicAssignments(groupName, memberID)))
+	}
 	return fmt.Sprintf("OK generation=%d member=%s assignments=%v", generation, memberID, assignments)
+}
+
+func formatTopicAssignments(assignments []coordinator.TopicPartition) string {
+	parts := make([]string, 0, len(assignments))
+	for _, assignment := range assignments {
+		parts = append(parts, fmt.Sprintf("%s:P%d", assignment.Topic, assignment.Partition))
+	}
+	return strings.Join(parts, ",")
 }
 
 // handleLeaveGroup processes LEAVE_GROUP command
@@ -579,10 +654,26 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 	if group == nil {
 		return fmt.Sprintf("ERROR: group_not_found group=%s", groupName)
 	}
+	if len(group.Topics) > 0 {
+		matched := false
+		for _, subscribed := range group.Topics {
+			if subscribed == topicName {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Sprintf("ERROR: topic_not_assigned_to_group actual=%s", topicName)
+		}
+	}
 
-	offsetTopic, ok := resolveOffsetTopic(group.TopicName, topicName)
-	if !ok {
-		return fmt.Sprintf("ERROR: topic_not_assigned_to_group expected=%s actual=%s", group.TopicName, topicName)
+	offsetTopic := topicName
+	if len(group.Topics) == 0 {
+		var ok bool
+		offsetTopic, ok = resolveOffsetTopic(group.TopicName, topicName)
+		if !ok {
+			return fmt.Sprintf("ERROR: topic_not_assigned_to_group expected=%s actual=%s", group.TopicName, topicName)
+		}
 	}
 
 	offset, isFind := ch.Coordinator.GetOffset(groupName, offsetTopic, partition)
@@ -735,7 +826,7 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 	if genErr != nil {
 		return "ERROR: invalid_generation command=COMMIT_OFFSET"
 	}
-	if errResp := ch.Coordinator.ValidateOwnershipFailure(groupID, memberID, generation, partition); errResp != "" {
+	if errResp := ch.Coordinator.ValidateTopicPartitionOwnershipFailure(groupID, memberID, generation, offsetTopic, partition); errResp != "" {
 		return errResp
 	}
 	if validateOnly && ownershipOnly {
@@ -777,7 +868,8 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 	args := parseKeyValueArgs(cmd[13:])
 
 	topicName := args["topic"]
-	if topicName == "" {
+	encodedTopicOffsets := args["topic_offsets"]
+	if topicName == "" && encodedTopicOffsets == "" {
 		return "ERROR: missing_topic command=BATCH_COMMIT"
 	}
 	groupID := args["group"]
@@ -795,6 +887,43 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 	generation, genErr := strconv.Atoi(generationText)
 	if genErr != nil {
 		return "ERROR: invalid_generation command=BATCH_COMMIT"
+	}
+	if encodedTopicOffsets != "" {
+		registrationEpoch, epochErr := strconv.ParseUint(args["registration_epoch"], 10, 64)
+		if epochErr != nil || registrationEpoch == 0 {
+			return "ERROR: invalid_group_epoch"
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(encodedTopicOffsets)
+		if err != nil {
+			return "ERROR: invalid_batch_commit_format"
+		}
+		offsetsByTopic := make(map[string][]coordinator.OffsetItem)
+		if err := json.Unmarshal(payload, &offsetsByTopic); err != nil || len(offsetsByTopic) == 0 {
+			return "ERROR: invalid_batch_commit_format"
+		}
+		if ch.Coordinator == nil {
+			return "ERROR: offset_manager_not_available"
+		}
+		if ch.isDistributed() {
+			coordAddr, isCoord, coordErr := ch.checkCoordinator(groupID)
+			if coordErr != nil {
+				return coordinatorUnavailableResponse
+			}
+			if !isCoord {
+				return notCoordinatorResponse(coordAddr)
+			}
+			_, err = ch.applyViaLeader("BATCH_OFFSET", map[string]interface{}{"type": "TXN_BATCH_COMMIT", "group": groupID, "member": memberID, "generation": generation, "registration_epoch": registrationEpoch, "offsets_by_topic": offsetsByTopic})
+		} else {
+			err = ch.Coordinator.ValidateAndCommitTopicOffsetsBulkForEpoch(groupID, memberID, generation, registrationEpoch, offsetsByTopic)
+		}
+		if err != nil {
+			return formatReplicatedGroupError(err, "raft_batch_apply_failed")
+		}
+		total := 0
+		for _, offsets := range offsetsByTopic {
+			total += len(offsets)
+		}
+		return fmt.Sprintf("OK batched=%d topics=%d", total, len(offsetsByTopic))
 	}
 	offsetTopic, offsetTopicErr := ch.resolveGroupOffsetTopic(groupID, topicName)
 	if offsetTopicErr != "" {
@@ -841,7 +970,7 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 		if err != nil {
 			return fmt.Sprintf("ERROR: invalid_offset entry=%q", pair)
 		}
-		if errResp := ch.ValidateOwnershipFailure(groupID, memberID, generation, p); errResp != "" {
+		if errResp := ch.Coordinator.ValidateTopicPartitionOwnershipFailure(groupID, memberID, generation, offsetTopic, p); errResp != "" {
 			util.Warn("Batch commit ownership rejected for partition %d: %s", p, errResp)
 			return errResp
 		}
@@ -885,6 +1014,14 @@ func (ch *CommandHandler) resolveGroupOffsetTopic(groupName, topicName string) (
 	group := ch.Coordinator.GetGroup(groupName)
 	if group == nil {
 		return topicName, ""
+	}
+	if len(group.Topics) > 0 {
+		for _, subscribed := range group.Topics {
+			if subscribed == topicName {
+				return topicName, ""
+			}
+		}
+		return "", fmt.Sprintf("ERROR: topic_not_assigned_to_group actual=%s", topicName)
 	}
 	offsetTopic, ok := resolveOffsetTopic(group.TopicName, topicName)
 	if !ok {
@@ -1009,12 +1146,12 @@ func (ch *CommandHandler) handleFindCoordinator(cmd string) string {
 	args := parseKeyValueArgs(cmd[17:]) // len("FIND_COORDINATOR ") = 17
 	coordKey := args["group"]
 	coordType := "group"
+	txnID := ""
 	if coordKey == "" {
-		txnID := firstNonEmpty(args["transactional_id"], args["txn"], args["transaction"])
+		txnID = firstNonEmpty(args["transactional_id"], args["txn"], args["transaction"])
 		if txnID == "" {
 			return "ERROR: missing_coordinator_key command=FIND_COORDINATOR"
 		}
-		coordKey = transactionCoordinatorKey(txnID)
 		coordType = "transaction"
 	}
 
@@ -1022,7 +1159,13 @@ func (ch *CommandHandler) handleFindCoordinator(cmd string) string {
 	port := ch.Config.BrokerPort
 
 	if ch.isDistributed() {
-		coordID, _, err := ch.Cluster.Router.FindCoordinator(coordKey)
+		coordID := ""
+		var err error
+		if txnID != "" {
+			coordID, _, _, err = ch.Cluster.Router.FindTransactionCoordinator(txnID)
+		} else {
+			coordID, _, err = ch.Cluster.Router.FindCoordinator(coordKey)
+		}
 		if err != nil {
 			return fmt.Sprintf("ERROR: find_coordinator_failed reason=%q", err.Error())
 		}
@@ -1049,7 +1192,13 @@ func (ch *CommandHandler) handleFindCoordinator(cmd string) string {
 		}
 
 		encodedCmd := util.EncodeMessage("", cmd)
-		resp, fwdErr := ch.Cluster.Router.ForwardToCoordinator(coordKey, string(encodedCmd))
+		var resp string
+		var fwdErr error
+		if txnID != "" {
+			resp, fwdErr = ch.Cluster.Router.ForwardToTransactionCoordinator(txnID, string(encodedCmd))
+		} else {
+			resp, fwdErr = ch.Cluster.Router.ForwardToCoordinator(coordKey, string(encodedCmd))
+		}
 		if fwdErr != nil {
 			return fmt.Sprintf("ERROR: forward_to_coordinator_failed reason=%q", fwdErr.Error())
 		}

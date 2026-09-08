@@ -70,6 +70,9 @@ type syncPublisher interface {
 type GroupMetadata struct {
 	mu                sync.RWMutex               // Per-group lock for offset operations
 	TopicName         string                     // Topic this group consumes
+	Topics            []string                   // Explicit v1 subscription topics
+	TopicPattern      string                     // Optional v1 subscription pattern
+	TopicPartitions   []TopicPartition           // Assignable v1 topic-partitions
 	Members           map[string]*MemberMetadata // Active members
 	Generation        int                        // Current membership generation
 	Partitions        []int                      // All partitions of the topic
@@ -81,22 +84,32 @@ type GroupMetadata struct {
 
 // MemberMetadata holds state for a single consumer instance.
 type MemberMetadata struct {
-	ID            string    // Unique consumer ID
-	LastHeartbeat time.Time // Last heartbeat timestamp
-	Assignments   []int     // Partition assignments for this member
+	ID               string           // Unique consumer ID
+	LastHeartbeat    time.Time        // Last heartbeat timestamp
+	Assignments      []int            // Legacy single-topic assignments
+	TopicAssignments []TopicPartition // v1 topic-partition assignments
+}
+
+type TopicPartition struct {
+	Topic     string `json:"topic"`
+	Partition int    `json:"partition"`
 }
 
 // GroupStateSnapshot is a serializable snapshot of a consumer group's state.
 type GroupStateSnapshot struct {
-	TopicName         string                    `json:"topic"`
-	Generation        int                       `json:"generation"`
-	Members           map[string][]int          `json:"members"`
-	Partitions        []int                     `json:"partitions,omitempty"`
-	LastRebalance     time.Time                 `json:"last_rebalance,omitempty"`
-	Offsets           map[string]map[int]uint64 `json:"offsets"`
-	RegistrationEpoch uint64                    `json:"registration_epoch,omitempty"`
-	OffsetRevisions   map[string]uint64         `json:"offset_revisions,omitempty"`
-	Deleted           bool                      `json:"deleted,omitempty"`
+	TopicName         string                      `json:"topic"`
+	Topics            []string                    `json:"topics,omitempty"`
+	TopicPattern      string                      `json:"topic_pattern,omitempty"`
+	TopicPartitions   []TopicPartition            `json:"topic_partitions,omitempty"`
+	Generation        int                         `json:"generation"`
+	Members           map[string][]int            `json:"members"`
+	TopicAssignments  map[string][]TopicPartition `json:"topic_assignments,omitempty"`
+	Partitions        []int                       `json:"partitions,omitempty"`
+	LastRebalance     time.Time                   `json:"last_rebalance,omitempty"`
+	Offsets           map[string]map[int]uint64   `json:"offsets"`
+	RegistrationEpoch uint64                      `json:"registration_epoch,omitempty"`
+	OffsetRevisions   map[string]uint64           `json:"offset_revisions,omitempty"`
+	Deleted           bool                        `json:"deleted,omitempty"`
 }
 
 // GroupStatus represents the status of a consumer group
@@ -104,6 +117,8 @@ type GroupStatus struct {
 	Status         string       `json:"status,omitempty"`
 	GroupName      string       `json:"group_name"`
 	TopicName      string       `json:"topic_name"`
+	Topics         []string     `json:"topics,omitempty"`
+	TopicPattern   string       `json:"topic_pattern,omitempty"`
 	State          string       `json:"state"` // "Stable", "Rebalancing", "Dead"
 	Generation     int          `json:"generation"`
 	MemberCount    int          `json:"member_count"`
@@ -113,9 +128,10 @@ type GroupStatus struct {
 }
 
 type MemberInfo struct {
-	MemberID      string    `json:"member_id"`
-	LastHeartbeat time.Time `json:"last_heartbeat"`
-	Assignments   []int     `json:"assignments"`
+	MemberID         string           `json:"member_id"`
+	LastHeartbeat    time.Time        `json:"last_heartbeat"`
+	Assignments      []int            `json:"assignments"`
+	TopicAssignments []TopicPartition `json:"topic_assignments,omitempty"`
 }
 
 type OffsetCommitMessage struct {
@@ -296,6 +312,25 @@ func (c *Coordinator) GetMemberAssignments(groupName string, memberID string) []
 	return cp
 }
 
+// GetMemberTopicAssignments returns assignments with their topic identity.
+func (c *Coordinator) GetMemberTopicAssignments(groupName, memberID string) []TopicPartition {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	group := c.groups[groupName]
+	if group == nil || group.Members[memberID] == nil {
+		return nil
+	}
+	member := group.Members[memberID]
+	if len(member.TopicAssignments) > 0 {
+		return append([]TopicPartition(nil), member.TopicAssignments...)
+	}
+	result := make([]TopicPartition, 0, len(member.Assignments))
+	for _, partition := range member.Assignments {
+		result = append(result, TopicPartition{Topic: group.TopicName, Partition: partition})
+	}
+	return result
+}
+
 func (c *Coordinator) ListGroups() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -318,10 +353,15 @@ func (c *Coordinator) GetGroupStatus(groupName string) (*GroupStatus, error) {
 
 	gName := groupName
 	tName := group.TopicName
+	topics := append([]string(nil), group.Topics...)
+	topicPattern := group.TopicPattern
 	gen := group.Generation
 	lRebalance := group.LastRebalance
 	mCount := len(group.Members)
 	pCount := len(group.Partitions)
+	if len(group.TopicPartitions) > 0 {
+		pCount = len(group.TopicPartitions)
+	}
 
 	members := make([]MemberInfo, 0, mCount)
 	for _, member := range group.Members {
@@ -329,9 +369,10 @@ func (c *Coordinator) GetGroupStatus(groupName string) (*GroupStatus, error) {
 		copy(asgn, member.Assignments)
 
 		members = append(members, MemberInfo{
-			MemberID:      member.ID,
-			LastHeartbeat: member.LastHeartbeat,
-			Assignments:   asgn,
+			MemberID:         member.ID,
+			LastHeartbeat:    member.LastHeartbeat,
+			Assignments:      asgn,
+			TopicAssignments: append([]TopicPartition(nil), member.TopicAssignments...),
 		})
 	}
 	c.mu.RUnlock()
@@ -344,6 +385,8 @@ func (c *Coordinator) GetGroupStatus(groupName string) (*GroupStatus, error) {
 	return &GroupStatus{
 		GroupName:      gName,
 		TopicName:      tName,
+		Topics:         topics,
+		TopicPattern:   topicPattern,
 		State:          state,
 		Generation:     gen,
 		MemberCount:    mCount,
@@ -366,6 +409,15 @@ func (c *Coordinator) GetGeneration(groupName string) int {
 
 	if group := c.groups[groupName]; group != nil {
 		return group.Generation
+	}
+	return 0
+}
+
+func (c *Coordinator) GetRegistrationEpoch(groupName string) uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if group := c.groups[groupName]; group != nil {
+		return group.RegistrationEpoch
 	}
 	return 0
 }
@@ -410,6 +462,17 @@ func (c *Coordinator) ResumeConsumer(groupName, memberID string, generation int)
 	return append([]int(nil), member.Assignments...), nil
 }
 
+func (c *Coordinator) ResumeConsumerTopicAssignments(groupName, memberID string, generation int) ([]TopicPartition, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if errResp := c.validateMemberGenerationLocked(groupName, memberID, generation); errResp != "" {
+		return nil, fmt.Errorf("%s", errResp)
+	}
+	member := c.groups[groupName].Members[memberID]
+	member.LastHeartbeat = time.Now()
+	return append([]TopicPartition(nil), member.TopicAssignments...), nil
+}
+
 // ValidateOwnershipFailure returns a wire-ready error code when a member does
 // not own a partition in the supplied generation. Empty string means valid.
 func (c *Coordinator) ValidateOwnershipFailure(groupName, memberID string, generation int, partition int) string {
@@ -426,6 +489,54 @@ func (c *Coordinator) ValidateOwnershipFailure(groupName, memberID string, gener
 		return fmt.Sprintf("ERROR: NOT_OWNER partition=%d member=%s group=%s generation=%d", partition, memberID, groupName, generation)
 	}
 	return ""
+}
+
+func (c *Coordinator) ValidateTopicPartitionOwnershipFailure(groupName, memberID string, generation int, topic string, partition int) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if errResp := c.validateMemberGenerationLocked(groupName, memberID, generation); errResp != "" {
+		return errResp
+	}
+	member := c.groups[groupName].Members[memberID]
+	for _, assigned := range member.TopicAssignments {
+		if assigned.Topic == topic && assigned.Partition == partition {
+			return ""
+		}
+	}
+	if len(member.TopicAssignments) == 0 && groupTopicMatches(c.groups[groupName].TopicName, topic) && contains(member.Assignments, partition) {
+		return ""
+	}
+	return fmt.Sprintf("ERROR: NOT_OWNER topic=%s partition=%d member=%s group=%s generation=%d", topic, partition, memberID, groupName, generation)
+}
+
+func (c *Coordinator) WithTopicOwnershipFence(groupName, memberID string, generation int, partitions []TopicPartition, fn func() error) error {
+	c.mu.RLock()
+	if errResp := c.validateMemberGenerationLocked(groupName, memberID, generation); errResp != "" {
+		c.mu.RUnlock()
+		return fmt.Errorf("%s", errResp)
+	}
+	member := c.groups[groupName].Members[memberID]
+	for _, requested := range partitions {
+		owned := false
+		for _, assigned := range member.TopicAssignments {
+			if assigned == requested {
+				owned = true
+				break
+			}
+		}
+		if !owned && len(member.TopicAssignments) == 0 && groupTopicMatches(c.groups[groupName].TopicName, requested.Topic) {
+			owned = contains(member.Assignments, requested.Partition)
+		}
+		if !owned {
+			c.mu.RUnlock()
+			return fmt.Errorf("ERROR: NOT_OWNER topic=%s partition=%d member=%s group=%s generation=%d", requested.Topic, requested.Partition, memberID, groupName, generation)
+		}
+	}
+	c.mu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
 }
 func (c *Coordinator) WithOwnershipFence(groupName, memberID string, generation int, partitions []int, fn func() error) error {
 	c.mu.RLock()
@@ -507,8 +618,12 @@ func (c *Coordinator) ExportState() map[string]*GroupStateSnapshot {
 		group.mu.RLock()
 		snap := &GroupStateSnapshot{
 			TopicName:         group.TopicName,
+			Topics:            append([]string(nil), group.Topics...),
+			TopicPattern:      group.TopicPattern,
+			TopicPartitions:   append([]TopicPartition(nil), group.TopicPartitions...),
 			Generation:        group.Generation,
 			Members:           make(map[string][]int, len(group.Members)),
+			TopicAssignments:  make(map[string][]TopicPartition, len(group.Members)),
 			Partitions:        append([]int(nil), group.Partitions...),
 			LastRebalance:     group.LastRebalance,
 			Offsets:           make(map[string]map[int]uint64),
@@ -519,6 +634,7 @@ func (c *Coordinator) ExportState() map[string]*GroupStateSnapshot {
 			assignments := make([]int, len(member.Assignments))
 			copy(assignments, member.Assignments)
 			snap.Members[mid] = assignments
+			snap.TopicAssignments[mid] = append([]TopicPartition(nil), member.TopicAssignments...)
 		}
 		for topic, partitions := range group.Offsets {
 			snap.Offsets[topic] = make(map[int]uint64, len(partitions))
@@ -560,6 +676,9 @@ func (c *Coordinator) ImportState(state map[string]*GroupStateSnapshot) {
 		}
 		group := &GroupMetadata{
 			TopicName:         snap.TopicName,
+			Topics:            append([]string(nil), snap.Topics...),
+			TopicPattern:      snap.TopicPattern,
+			TopicPartitions:   append([]TopicPartition(nil), snap.TopicPartitions...),
 			Generation:        snap.Generation,
 			Members:           make(map[string]*MemberMetadata, len(snap.Members)),
 			Partitions:        append([]int(nil), snap.Partitions...),
@@ -571,9 +690,10 @@ func (c *Coordinator) ImportState(state map[string]*GroupStateSnapshot) {
 
 		for mid, assignments := range snap.Members {
 			group.Members[mid] = &MemberMetadata{
-				ID:            mid,
-				LastHeartbeat: time.Now(),
-				Assignments:   append([]int(nil), assignments...),
+				ID:               mid,
+				LastHeartbeat:    time.Now(),
+				Assignments:      append([]int(nil), assignments...),
+				TopicAssignments: append([]TopicPartition(nil), snap.TopicAssignments[mid]...),
 			}
 		}
 

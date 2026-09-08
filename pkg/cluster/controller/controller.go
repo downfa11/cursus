@@ -123,6 +123,20 @@ func (cc *ClusterController) IsLeader() bool {
 	return false
 }
 
+func (cc *ClusterController) OwnedTransactionCoordinatorShards() []int {
+	if cc == nil || cc.RaftManager == nil || cc.RaftManager.GetFSM() == nil {
+		return nil
+	}
+	brokerID := cc.brokerID
+	if brokerID == "" && cc.Router != nil {
+		brokerID = cc.Router.BrokerID()
+	}
+	if brokerID == "" {
+		return []int{}
+	}
+	return cc.RaftManager.GetFSM().TransactionCoordinatorShardsOwnedBy(brokerID)
+}
+
 func (cc *ClusterController) IsAuthorized(topic string, partition int) bool {
 	if cc.RaftManager == nil {
 		return false

@@ -343,7 +343,7 @@ func DecodeBatchMessages(data []byte) ([]Message, string, int, error) {
 
 	messages := make([]Message, 0, msgCount)
 	for i := 0; i < int(msgCount); i++ {
-		var m Message
+		m := Message{Topic: string(topicBytes), Partition: int(partition)}
 		if err := binary.Read(reader, binary.BigEndian, &m.Offset); err != nil {
 			return nil, "", 0, fmt.Errorf("read offset[%d]: %w", i, err)
 		}

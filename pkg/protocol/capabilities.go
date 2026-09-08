@@ -17,12 +17,14 @@ const (
 type Feature string
 
 const (
-	FeatureEventSourcingV1      Feature = "event_sourcing_v1"
-	FeatureIdempotentProducerV1 Feature = "idempotent_producer_v1"
-	FeatureOffsetResumeV1       Feature = "offset_resume_v1"
-	FeatureStreamControlV1      Feature = "stream_control_v1"
-	FeatureStructuredErrorsV1   Feature = "structured_errors_v1"
-	FeatureTopicCompactionV1    Feature = "topic_compaction_v1"
+	FeatureEventSourcingV1              Feature = "event_sourcing_v1"
+	FeatureIdempotentProducerV1         Feature = "idempotent_producer_v1"
+	FeatureOffsetResumeV1               Feature = "offset_resume_v1"
+	FeatureStreamControlV1              Feature = "stream_control_v1"
+	FeatureStructuredErrorsV1           Feature = "structured_errors_v1"
+	FeatureTopicCompactionV1            Feature = "topic_compaction_v1"
+	FeatureConsumerGroupSubscriptionsV1 Feature = "consumer_group_subscriptions_v1"
+	FeatureTransactionalProcessingV1    Feature = "transactional_processing_v1"
 )
 
 var supportedFeatures = []Feature{
@@ -32,6 +34,8 @@ var supportedFeatures = []Feature{
 	FeatureStreamControlV1,
 	FeatureStructuredErrorsV1,
 	FeatureTopicCompactionV1,
+	FeatureConsumerGroupSubscriptionsV1,
+	FeatureTransactionalProcessingV1,
 }
 
 func SupportedFeatures() []Feature {

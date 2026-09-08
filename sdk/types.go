@@ -7,6 +7,8 @@ import (
 
 // Message represents a single message
 type Message struct {
+	Topic      string
+	Partition  int
 	Offset     uint64
 	ProducerID string
 	SeqNum     uint64

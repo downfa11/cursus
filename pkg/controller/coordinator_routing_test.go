@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/cursus-io/cursus/pkg/cluster/replication/fsm"
 	"github.com/cursus-io/cursus/pkg/config"
 	"github.com/cursus-io/cursus/pkg/coordinator"
+	"github.com/cursus-io/cursus/pkg/transaction"
 	"github.com/hashicorp/raft"
 	"github.com/stretchr/testify/require"
 )
@@ -28,6 +31,14 @@ func (coordinatorRoutingTopicHandler) CreateTopic(string, int, bool, bool) error
 
 func (m *coordinatorRoutingRaftManager) GetFSM() *fsm.BrokerFSM {
 	return m.brokerFSM
+}
+
+func (m *coordinatorRoutingRaftManager) ApplyCommand(prefix string, data []byte) error {
+	result := m.brokerFSM.Apply(&raft.Log{Data: append([]byte(prefix+":"), data...)})
+	if err, ok := result.(error); ok {
+		return err
+	}
+	return nil
 }
 
 func newCoordinatorRoutingHandler(
@@ -82,6 +93,55 @@ func TestCheckCoordinatorNormalLocalAndRemoteRoutes(t *testing.T) {
 		require.False(t, isCoordinator)
 		require.Equal(t, expected, addr)
 	})
+}
+
+func TestPreparedTransactionRecoveryMovesToNewShardOwner(t *testing.T) {
+	brokerFSM := fsm.NewBrokerFSM(nil, nil)
+	registerRoutingBroker(t, brokerFSM, "node-a")
+	registerRoutingBroker(t, brokerFSM, "node-b")
+	handler := newCoordinatorRoutingHandler("node-b", brokerFSM, nil)
+
+	txnID := ""
+	var oldEpoch int64
+	for i := 0; i < 10_000; i++ {
+		candidate := fmt.Sprintf("takeover-%d", i)
+		ownership, ok := brokerFSM.GetTransactionCoordinator(candidate)
+		if ok && ownership.Owner == "node-a" {
+			txnID = candidate
+			oldEpoch = ownership.Epoch
+			break
+		}
+	}
+	require.NotEmpty(t, txnID)
+
+	producerID, producerEpoch, err := handler.TxnManager.InitProducerWithMode(txnID, transaction.ModeProcessingV1)
+	require.NoError(t, err)
+	require.NoError(t, handler.TxnManager.SetCoordinatorEpoch(txnID, oldEpoch))
+	require.NoError(t, handler.TxnManager.Begin(txnID, producerID, producerEpoch))
+	_, err = handler.TxnManager.PrepareCommit(txnID, producerID, producerEpoch)
+	require.NoError(t, err)
+
+	prepared := handler.TxnManager.ExportState()[txnID]
+	payload, err := json.Marshal(map[string]interface{}{
+		"transaction":       prepared,
+		"coordinator_owner": "node-a",
+		"coordinator_epoch": oldEpoch,
+	})
+	require.NoError(t, err)
+	require.Nil(t, brokerFSM.Apply(&raft.Log{Data: append([]byte("TXN_SYNC:"), payload...)}))
+
+	result := brokerFSM.Apply(&raft.Log{Data: []byte(`DEREGISTER:{"id":"node-a"}`)})
+	require.Nil(t, result)
+	newOwnership, ok := brokerFSM.GetTransactionCoordinator(txnID)
+	require.True(t, ok)
+	require.Equal(t, "node-b", newOwnership.Owner)
+	require.Greater(t, newOwnership.Epoch, oldEpoch)
+
+	require.NoError(t, handler.RecoverPreparedTransactions())
+	status, err := handler.TxnManager.Status(txnID)
+	require.NoError(t, err)
+	require.Equal(t, transaction.StateCommitted, status.State)
+	require.Equal(t, newOwnership.Epoch, status.CoordinatorEpoch)
 }
 
 func TestGroupCommandsFailClosedWhenCoordinatorDiscoveryFails(t *testing.T) {

@@ -166,6 +166,8 @@ Version 1 features currently advertised by the broker are:
 | `idempotent_producer_v1` | Supports producer ID, epoch, and sequence fencing |
 | `event_sourcing_v1` | Supports event stream and snapshot commands |
 | `topic_compaction_v1` | Supports per-topic cleanup policy declaration and standalone keyed closed-segment compaction |
+| `consumer_group_subscriptions_v1` | Supports explicit multi-topic and pattern-backed consumer-group registration and topic-partition assignments |
+| `transactional_processing_v1` | Supports append-on-send broker transactions, prepare commit/abort, timeout resolution, multi-topic offsets, and exactly-once broker processing |
 
 Feature names describe independent contracts; clients must not infer support for an unadvertised feature from the protocol version alone.
 
@@ -336,18 +338,30 @@ Missing targets return `ERROR: missing_broker command=ELECT_LEADER`; rejected st
 
 #### Consumer Group Coordination
 
+**REGISTER_GROUP**
+
+```text
+REGISTER_GROUP group=<name> topic=<topic>
+REGISTER_GROUP group=<name> topics=<topic-1>,<topic-2>[,...]
+REGISTER_GROUP group=<name> pattern=<glob>
+```
+
+Exactly one selector is required. `topics` and `pattern` require `consumer_group_subscriptions_v1`; the broker durably stores the selector and its concrete topic-partition expansion. A group member receives each subscribed topic-partition at most once per generation.
+
 **JOIN_GROUP**
 ```
-JOIN_GROUP topic=<name> group=<name> member=<id>
+JOIN_GROUP [topic=<name>] group=<name> member=<id>
 ```
 Response: `OK generation=<N> member=<actual-id> assignments=[0,1,2]`
+
+For a negotiated multi-topic group, omit `topic`; the response uses `topic_assignments=<topic>:P<partition>,...`.
 
 > Broker appends a random 4-digit suffix to the member ID.
 > e.g., `member=consumer-1` → actual ID `consumer-1-8374`
 
 **SYNC_GROUP**
 ```
-SYNC_GROUP topic=<name> group=<name> member=<actual-id>
+SYNC_GROUP [topic=<name>] group=<name> member=<actual-id> generation=<N>
 ```
 Response: `OK assignments=[0,1,2]`
 
@@ -517,11 +531,11 @@ missing, an entry is malformed, or the same partition appears more than once.
 
 #### Transaction Coordinator
 
-Cursus exposes a broker-managed transaction coordinator for consume-process-produce workflows. In distributed mode, transaction commands are routed by `transactional_id` using the coordinator key `txn:<transactional_id>`. Clients can discover the owner with `FIND_COORDINATOR transactional_id=<id>` and must retry on `ERROR: NOT_COORDINATOR host=<host> port=<port>`.
+Cursus exposes a broker-managed transaction coordinator for consume-process-produce workflows. In distributed mode, each `transactional_id` maps to a stable logical coordinator shard. `transaction_coordinator_shards` selects the count when a cluster is first created and defaults to 50. Raft metadata persists the immutable count plus each shard's owner and coordinator epoch; a broker with a different configured count is rejected before joining. Clients can discover the current owner with `FIND_COORDINATOR transactional_id=<id>` and must retry on `ERROR: NOT_COORDINATOR host=<host> port=<port>`.
 
-Standalone brokers append coordinator snapshots to `<log_dir>/__transaction_state.journal` and fsync each accepted transition. One encoded journal snapshot is limited to 32 MiB. Recovery truncates a torn or checksum-corrupt final journal record, rejects non-tail corruption, restores the latest state for each transactional id, and retries durable `committing` work before the client listener becomes ready. Distributed brokers replicate the same snapshots through the Raft FSM as `TXN_SYNC`. Transaction state entered the schema in version 4, committed partition watermarks in version 5, and durable topic definitions in the current version 6.
+Standalone brokers append coordinator snapshots to `<log_dir>/__transaction_state.journal` and fsync each accepted transition. One encoded journal snapshot is limited to 32 MiB. Recovery truncates a torn or checksum-corrupt final journal record, rejects non-tail corruption, restores the latest state for each transactional id, and retries durable prepared work before the client listener becomes ready. Distributed brokers replicate the same snapshots through the Raft FSM as `TXN_SYNC`. Broker membership changes deterministically reassign coordinator shards and advance their epochs; only the current shard owner may persist v1 transaction transitions. The new owner resumes prepared work and timeout handling, while stale owner transitions and markers are fenced. Runtime transaction state is lock-sharded by the same logical shard mapping; prepared and deadline indexes restrict periodic recovery to owned shards and process candidates in bounded `transaction_recovery_batch_size` batches.
 
-Clients should first call `INIT_PRODUCER_ID` for a `transactional_id`; the broker returns the authoritative `(producerId, epoch)` session and bumps `epoch` on re-initialization to fence older producers. The coordinator fences stale producers by `(transactional_id, producerId, epoch)`: lower epochs are rejected, and staged operations must use the same producer and epoch that opened the transaction. After `transactional_id_expiration_ms`, completed transactions discard staged message/offset payloads but retain a compact epoch tombstone. The tombstone participates in standalone journal and distributed metadata snapshots, preventing an older producer session from being revived. Active `open` and `committing` transactions are not expired by the cleanup path.
+Negotiate `transactional_processing_v1` before `INIT_PRODUCER_ID` to select the exactly-once processing path. The broker returns the authoritative `(producerId, epoch)` session and bumps `epoch` on re-initialization to fence older producers. Open v1 transactions receive a deadline from `transaction_timeout_ms` (default 60000); the broker durably prepares and writes abort markers after timeout. After `transactional_id_expiration_ms`, completed transactions discard operation payloads but retain a compact epoch tombstone. Clients that do not negotiate the feature continue to use the compatible legacy staged-record path.
 
 **INIT_PRODUCER_ID**
 
@@ -545,9 +559,9 @@ Success: `OK transactional_id=<id> state=open producerId=<producer-id> epoch=<N>
 TXN_PUBLISH transactional_id=<id> topic=<topic> [partition=<N>] producerId=<producer-id> seqNum=<N> epoch=<N> [key=<key>] message=<payload>
 ```
 
-Success: `OK transactional_id=<id> staged_messages=1 topic=<topic> partition=<N>`.
+Success in v1: `OK transactional_id=<id> appended=true topic=<topic> partition=<N> state=open`.
 
-The record is staged in the transaction coordinator and is not published until `END_TXN ... result=commit`. `seqNum` is required and must be greater than zero; the broker uses `(producerId, epoch, seqNum)` to make commit recovery idempotent even when the target topic is not globally idempotent. Commit publishes records through the normal partition-leader and replication path with `transaction_state=open`, then appends a hidden Cursus transaction marker to every touched partition. A matching marker resolves the partition log, but `read_committed` also requires the coordinator decision for the current transaction epoch to be `committed`; marker append alone cannot expose output while the transaction is still `committing`. Aborting an `open` transaction writes no output or control records. Once durable commit preparation begins, abort is fenced and recovery must finish the commit; readers still understand abort markers already present in older logs.
+In v1 the broker registers the participant durably, then appends the idempotent record immediately with `transaction_state=open`. It is invisible to `read_committed` until a matching commit marker and final coordinator decision exist. Abort and timeout append abort markers, so unresolved records never become visible. `seqNum` is required and makes publish retry idempotent even on a topic that was not created as globally idempotent.
 
 **SEND_OFFSETS_TO_TXN**
 
@@ -557,7 +571,7 @@ SEND_OFFSETS_TO_TXN transactional_id=<id> producerId=<producer-id> epoch=<N> top
 
 Success: `OK transactional_id=<id> staged_offsets=<N>`.
 
-The broker validates `member`, `generation`, partition ownership, and monotonic offsets before staging, then revalidates them before commit. Every offset in one transaction must share exactly one `(topic, group, member, generation)` scope. Repeating a partition replaces only an equal or higher staged `nextOffset`; a lower value is rejected. Commit applies the scope with one fenced `BATCH_COMMIT`, so either every partition offset in that scope advances or none does. Use separate transactions for different consumer scopes.
+The broker validates `member`, `generation`, group lifecycle epoch, topic-partition ownership, and monotonic offsets before staging, then revalidates them before commit. A v1 transaction may call this command for multiple topics, provided all offsets belong to the same `(group, member, generation, registrationEpoch)` session. Commit applies the complete multi-topic set under one membership fence. Repeating a topic-partition may only retain or advance its staged `nextOffset`.
 
 **END_TXN**
 
@@ -565,7 +579,7 @@ The broker validates `member`, `generation`, partition ownership, and monotonic 
 END_TXN transactional_id=<id> producerId=<producer-id> epoch=<N> result=<commit|abort>
 ```
 
-Success: `OK transactional_id=<id> state=<committed|aborted> messages=<N> offsets=<N>`. Retrying the same final result with the same `producerId` and `epoch` is idempotent; a lower epoch is rejected as fenced, and trying to abort a committed transaction or commit an aborted transaction returns an error. Once commit preparation has durably entered `committing`, abort is rejected because output markers or source offsets may already have been applied; clients must retry commit with the same producer session.
+Success: `OK transactional_id=<id> state=<committed|aborted> messages=<N> offsets=<N>`. Retrying the same final result with the same `producerId` and `epoch` is idempotent; a lower epoch is rejected as fenced, and trying to abort a committed transaction or commit an aborted transaction returns an error. Once commit preparation has durably entered `prepare_commit`, abort is rejected; clients must retry commit with the same producer session.
 
 **TXN_STATUS**
 
@@ -573,21 +587,20 @@ Success: `OK transactional_id=<id> state=<committed|aborted> messages=<N> offset
 TXN_STATUS transactional_id=<id>
 ```
 
-Success: `OK transactional_id=<id> state=<open|committing|committed|aborted> messages=<N> offsets=<N>`.
+Success: `OK transactional_id=<id> mode=<legacy|transactional_processing_v1> state=<open|prepare_commit|prepare_abort|committed|aborted> messages=<N> participants=<N> offsets=<N>`.
 
 Current guarantee: a successful transaction commit has one durable coordinator decision and follows this order:
 
-1. validate the staged output records and the single consumer offset scope while the transaction is still `open`,
-2. persist the prepared `committing` state,
+1. validate participants and the fenced consumer-group offset scope while the transaction is still `open`,
+2. persist `prepare_commit`,
 3. revalidate current topic, ownership, generation, and monotonic-offset fences,
-4. publish output records idempotently through partition leaders and replication,
-5. append hidden transaction commit markers to all touched partitions,
-6. apply the staged offsets with one generation/ownership-fenced bulk commit,
-7. persist the final `committed` coordinator decision.
+4. apply all staged topic offsets under one generation/lifecycle/ownership fence,
+5. append hidden transaction commit markers to all touched output partitions,
+6. persist the final `committed` coordinator decision.
 
-`read_committed` exposes a transaction only when its partition commit marker and current-epoch coordinator decision agree. Aborted records and control markers are skipped; the earliest unresolved transaction defines the stable visibility boundary. Partitions maintain an in-memory transaction index rebuilt from durable logs. For records created before durable coordinator decisions were stored, or for epochs no longer retained in the current coordinator snapshot, the durable partition marker remains the compatibility authority; every currently tracked epoch requires marker/decision agreement. Coordinator state is restored from the standalone fsynced journal or, in distributed mode, from `TXN_SYNC` and Raft metadata snapshots. A broker that restores `committing` state retries the prepared work; producer sequence state rebuilt from logs prevents duplicate records. Retried finalization with the same epoch is idempotent.
+`read_committed` exposes a transaction only when its partition commit marker and current-epoch coordinator decision agree. Aborted records and control markers are skipped; the earliest unresolved transaction defines the stable visibility boundary. Partitions maintain an in-memory transaction index rebuilt from durable logs. For records created before durable coordinator decisions were stored, or for epochs no longer retained in the current coordinator snapshot, the durable partition marker remains the compatibility authority; every currently tracked epoch requires marker/decision agreement. Coordinator state is restored from the standalone fsynced journal or, in distributed mode, from `TXN_SYNC` and Raft metadata snapshots. A broker that restores a prepared state retries the corresponding commit or abort work; producer sequence state rebuilt from logs prevents duplicates. Retried finalization with the same epoch is idempotent.
 
-The marker uses Cursus control metadata (`control_batch_type=transaction`, `control_batch_version=2`, `control_batch_coordinator_epoch=<epoch>`) and control-record bytes (`key: int16 version, int16 markerType`; `value: int16 version, int32 coordinatorEpoch`). The surrounding segment and network protocol remain Cursus-owned. The transaction covers broker output records and one consumer offset scope; external database, HTTP, filesystem, or service effects remain outside it and require application-level idempotency or their own transaction.
+The marker uses Cursus control metadata (`control_batch_type=transaction`, `control_batch_version=2`, `control_batch_coordinator_epoch=<epoch>`) and control-record bytes (`key: int16 version, int16 markerType`; `value: int16 version, int32 coordinatorEpoch`). For v1 distributed transactions this is the durable coordinator-shard epoch, independent of the producer epoch, so markers from a previous shard owner cannot authorize visibility. The transaction provides exactly-once processing for Cursus input offsets and Cursus output records in one broker transaction. External database, HTTP, filesystem, or service effects remain outside it and require application-level idempotency or their own transaction.
 #### Event Sourcing Commands
 
 These commands are available only on topics created with `event_sourcing=true`.
@@ -941,7 +954,7 @@ Set `isIdempotent=true` on PUBLISH or in binary batch header.
 - Broker tracks the last seen `(epoch, seqNum)` per `(producerId)` per partition
 - Disk-backed partitions persist producer sequence checkpoints, rebuild producer state from partition logs on broker restart, and use that state to make transactional commit recovery idempotent
 - Distributed FSM snapshots also include producer sequence state for replicated message commands
-- Producer epochs entered FSM snapshot version 3, transaction state version 4, committed partition watermarks version 5, and durable topic definitions version 6. Current brokers write version 6. Do not run a mixed-version rolling upgrade with binaries that cannot decode version 6; upgrade the cluster together or use an explicitly documented compatibility procedure.
+- Producer epochs entered FSM snapshot version 3, transaction state version 4, committed partition watermarks version 5, durable topic definitions version 6, transaction coordinator shard ownership version 7, and the immutable shard count version 8. Version 7 and older snapshots restore with the historical count of 50. Current brokers write version 8. Do not run a mixed-version rolling upgrade with binaries that cannot decode version 8; upgrade the cluster together or use an explicitly documented compatibility procedure.
 - Producer state expires from memory after `producer_state_ttl_ms` of inactivity (default 30 minutes); durable checkpoints retain the last persisted sequence until the partition data is removed
 
 ---

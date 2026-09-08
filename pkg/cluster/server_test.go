@@ -27,6 +27,10 @@ func (m *MockServiceDiscovery) AddNode(nodeID string, addr string) (string, erro
 	args := m.Called(nodeID, addr)
 	return args.String(0), args.Error(1)
 }
+func (m *MockServiceDiscovery) AddNodeWithTransactionCoordinatorShards(nodeID string, addr string, shardCount int) (string, error) {
+	args := m.Called(nodeID, addr, shardCount)
+	return args.String(0), args.Error(1)
+}
 func (m *MockServiceDiscovery) RemoveNode(nodeID string) (string, error) {
 	args := m.Called(nodeID)
 	return args.String(0), args.Error(1)
@@ -48,7 +52,7 @@ func TestClusterServer_Join(t *testing.T) {
 	addr := ln.Addr().String()
 
 	t.Run("Join Success", func(t *testing.T) {
-		msd.On("AddNode", "node1", "127.0.0.1:9001").Return("leader-addr", nil).Once()
+		msd.On("AddNodeWithTransactionCoordinatorShards", "node1", "127.0.0.1:9001", 0).Return("leader-addr", nil).Once()
 
 		conn, err := net.Dial("tcp", addr)
 		assert.NoError(t, err)
@@ -71,7 +75,7 @@ func TestClusterServer_Join(t *testing.T) {
 	})
 
 	t.Run("Join Fail", func(t *testing.T) {
-		msd.On("AddNode", "node2", "127.0.0.1:9002").Return("", fmt.Errorf("error")).Once()
+		msd.On("AddNodeWithTransactionCoordinatorShards", "node2", "127.0.0.1:9002", 0).Return("", fmt.Errorf("error")).Once()
 
 		conn, err := net.Dial("tcp", addr)
 		assert.NoError(t, err)
@@ -89,6 +93,25 @@ func TestClusterServer_Join(t *testing.T) {
 		assert.NoError(t, err)
 
 		assert.False(t, resp.Success)
+		msd.AssertExpectations(t)
+	})
+
+	t.Run("Join Passes Transaction Coordinator Shards", func(t *testing.T) {
+		msd.On("AddNodeWithTransactionCoordinatorShards", "node3", "127.0.0.1:9003", 7).Return("leader-addr", nil).Once()
+
+		conn, err := net.Dial("tcp", addr)
+		assert.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+
+		payload := `{"node_id":"node3","address":"127.0.0.1:9003","transaction_coordinator_shards":7}`
+		err = util.WriteWithLength(conn, util.EncodeMessage("cluster", "JOIN_CLUSTER "+payload))
+		assert.NoError(t, err)
+
+		respData, err := util.ReadWithLength(conn)
+		assert.NoError(t, err)
+		var resp joinResponse
+		assert.NoError(t, json.Unmarshal(respData, &resp))
+		assert.True(t, resp.Success)
 		msd.AssertExpectations(t)
 	})
 }

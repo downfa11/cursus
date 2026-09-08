@@ -45,6 +45,26 @@ func TestStandaloneGroupRegistrationSurvivesRestartWithoutCommit(t *testing.T) {
 	require.Equal(t, 1, restarted.RecoverySnapshot().RestoredGroups)
 }
 
+func TestStandaloneMultiTopicRegistrationSurvivesRestart(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.LogDir = t.TempDir()
+	dm, tm, cd := startStandaloneCoordinator(t, cfg, false)
+	require.NoError(t, tm.CreateTopic("orders", 2, false, false))
+	require.NoError(t, tm.CreateTopic("payments", 1, false, false))
+	require.NoError(t, cd.RegisterGroupSubscription("workers", []string{"payments", "orders"}, "", map[string]int{"orders": 2, "payments": 1}))
+	cd.Stop()
+	tm.Stop()
+	dm.CloseAllHandlers()
+
+	restartedDM, _, restarted := startStandaloneCoordinator(t, cfg, true)
+	t.Cleanup(restartedDM.CloseAllHandlers)
+	t.Cleanup(restarted.Stop)
+	status, err := restarted.GetGroupStatus("workers")
+	require.NoError(t, err)
+	require.Equal(t, []string{"orders", "payments"}, status.Topics)
+	require.Equal(t, 3, status.PartitionCount)
+}
+
 func TestStandaloneOffsetAndTombstoneRecovery(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.LogDir = t.TempDir()

@@ -96,6 +96,7 @@ func (bc *BrokerClient) FindTransactionCoordinator(transactionalID string) (stri
 }
 
 func (bc *BrokerClient) transactionCommand(command string) (string, error) {
+	bc.EnableProtocolFeatures("transactional_processing_v1")
 	resp, err := bc.SendCommand("", command, 10*time.Second)
 	if err != nil {
 		return "", err

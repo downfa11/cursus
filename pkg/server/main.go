@@ -132,7 +132,7 @@ func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicMa
 			// Wait a bit for Raft to initialize
 			time.Sleep(2 * time.Second)
 
-			if err := clusterClient.JoinCluster(cfg.StaticClusterMembers, brokerID, localAddr, cfg.DiscoveryPort); err != nil {
+			if err := clusterClient.JoinClusterWithTransactionCoordinatorShards(cfg.StaticClusterMembers, brokerID, localAddr, cfg.DiscoveryPort, cfg.TransactionCoordinatorShards); err != nil {
 				util.Warn("⚠️ Join cluster attempt failed: %v. This is normal if already part of the cluster.", err)
 			} else {
 				util.Info("✅ Successfully joined cluster")
@@ -151,7 +151,7 @@ func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicMa
 					if cc != nil && cc.Router != nil {
 						brokerJSON, _ := json.Marshal(map[string]interface{}{
 							"id": brokerID, "addr": localAddr, "client_addr": clientAddr,
-							"status": "active",
+							"status": "active", "transaction_coordinator_shards": cfg.TransactionCoordinatorShards,
 						})
 						raftCmd := fmt.Sprintf("RAFT_APPLY %stype=REGISTER payload=%s", internalAuthPrefix(cfg), string(brokerJSON))
 						encodedCmd := util.EncodeMessage("", raftCmd)
@@ -211,6 +211,7 @@ func RunServerContext(ctx context.Context, cfg *config.Config, tm *topic.TopicMa
 	if err := globalCH.RecoverPreparedTransactions(); err != nil {
 		return fmt.Errorf("failed to recover prepared transactions: %w", err)
 	}
+	globalCH.StartTransactionTimeoutMonitor(ctx)
 
 	healthState := NewHealthState()
 	addStorageReadinessChecks(healthState, tm, dm)

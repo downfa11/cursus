@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	ConsumerMetadataRecordVersion = 1
+	ConsumerMetadataRecordVersion              = 1
+	ConsumerMetadataRecordVersionSubscriptions = 2
 
 	ConsumerMetadataRecordRegistration   = "group_registration"
 	ConsumerMetadataRecordOffsetSnapshot = "offset_snapshot"
@@ -36,16 +37,19 @@ type TopicOffsetSnapshot struct {
 // re-created groups, while offset revisions make replay independent of the
 // physical internal-topic partition order.
 type ConsumerMetadataRecord struct {
-	Version        int                   `json:"version"`
-	Type           string                `json:"type"`
-	Group          string                `json:"group"`
-	Topic          string                `json:"topic,omitempty"`
-	PartitionCount int                   `json:"partition_count,omitempty"`
-	Epoch          uint64                `json:"epoch"`
-	Revision       uint64                `json:"revision,omitempty"`
-	Offsets        []OffsetItem          `json:"offsets,omitempty"`
-	InitialOffsets []TopicOffsetSnapshot `json:"initial_offsets,omitempty"`
-	Timestamp      time.Time             `json:"timestamp"`
+	Version         int                   `json:"version"`
+	Type            string                `json:"type"`
+	Group           string                `json:"group"`
+	Topic           string                `json:"topic,omitempty"`
+	PartitionCount  int                   `json:"partition_count,omitempty"`
+	Topics          []string              `json:"topics,omitempty"`
+	TopicPattern    string                `json:"topic_pattern,omitempty"`
+	TopicPartitions []TopicPartition      `json:"topic_partitions,omitempty"`
+	Epoch           uint64                `json:"epoch"`
+	Revision        uint64                `json:"revision,omitempty"`
+	Offsets         []OffsetItem          `json:"offsets,omitempty"`
+	InitialOffsets  []TopicOffsetSnapshot `json:"initial_offsets,omitempty"`
+	Timestamp       time.Time             `json:"timestamp"`
 }
 
 // ConsumerMetadataRecoveryStatus is safe to expose through readiness and
@@ -125,6 +129,15 @@ func (c *Coordinator) setRecoveryFailureStatus(status ConsumerMetadataRecoverySt
 func canonicalConsumerMetadataRecord(record ConsumerMetadataRecord) ConsumerMetadataRecord {
 	record.Timestamp = record.Timestamp.UTC()
 	record.Offsets = canonicalOffsetItems(record.Offsets)
+	record.Topics = append([]string(nil), record.Topics...)
+	sort.Strings(record.Topics)
+	record.TopicPartitions = append([]TopicPartition(nil), record.TopicPartitions...)
+	sort.Slice(record.TopicPartitions, func(i, j int) bool {
+		if record.TopicPartitions[i].Topic != record.TopicPartitions[j].Topic {
+			return record.TopicPartitions[i].Topic < record.TopicPartitions[j].Topic
+		}
+		return record.TopicPartitions[i].Partition < record.TopicPartitions[j].Partition
+	})
 	initial := make([]TopicOffsetSnapshot, len(record.InitialOffsets))
 	copy(initial, record.InitialOffsets)
 	for i := range initial {
@@ -142,7 +155,7 @@ func canonicalOffsetItems(offsets []OffsetItem) []OffsetItem {
 }
 
 func validateConsumerMetadataRecord(record ConsumerMetadataRecord) error {
-	if record.Version != ConsumerMetadataRecordVersion {
+	if record.Version != ConsumerMetadataRecordVersion && record.Version != ConsumerMetadataRecordVersionSubscriptions {
 		return fmt.Errorf("unsupported consumer metadata record version %d", record.Version)
 	}
 	if record.Group == "" || record.Epoch == 0 {
@@ -150,6 +163,9 @@ func validateConsumerMetadataRecord(record ConsumerMetadataRecord) error {
 	}
 	switch record.Type {
 	case ConsumerMetadataRecordRegistration:
+		if record.Version == ConsumerMetadataRecordVersionSubscriptions {
+			return validateSubscriptionRegistration(record)
+		}
 		if record.Topic == "" || record.PartitionCount <= 0 {
 			return fmt.Errorf("group registration is missing topic or partition count")
 		}
@@ -188,6 +204,44 @@ func validateConsumerMetadataRecord(record ConsumerMetadataRecord) error {
 		}
 	default:
 		return fmt.Errorf("unsupported consumer metadata record type %q", record.Type)
+	}
+	return nil
+}
+
+func validateSubscriptionRegistration(record ConsumerMetadataRecord) error {
+	if len(record.Topics) == 0 || len(record.TopicPartitions) == 0 {
+		return fmt.Errorf("group subscription registration is missing topics or partitions")
+	}
+	if record.PartitionCount != 0 || record.Revision != 0 || len(record.Offsets) != 0 {
+		return fmt.Errorf("group subscription registration contains legacy or offset-record fields")
+	}
+	allowed := make(map[string]struct{}, len(record.Topics))
+	for _, topicName := range record.Topics {
+		if topicName == "" {
+			return fmt.Errorf("group subscription registration contains an empty topic")
+		}
+		if _, exists := allowed[topicName]; exists {
+			return fmt.Errorf("group subscription registration contains duplicate topic %q", topicName)
+		}
+		allowed[topicName] = struct{}{}
+	}
+	seen := make(map[TopicPartition]struct{}, len(record.TopicPartitions))
+	for _, tp := range record.TopicPartitions {
+		if _, ok := allowed[tp.Topic]; !ok || tp.Partition < 0 {
+			return fmt.Errorf("invalid subscription partition topic=%q partition=%d", tp.Topic, tp.Partition)
+		}
+		if _, exists := seen[tp]; exists {
+			return fmt.Errorf("duplicate subscription partition topic=%q partition=%d", tp.Topic, tp.Partition)
+		}
+		seen[tp] = struct{}{}
+	}
+	for _, snapshot := range record.InitialOffsets {
+		if _, ok := allowed[snapshot.Topic]; !ok {
+			return fmt.Errorf("group subscription offset topic %q is not subscribed", snapshot.Topic)
+		}
+		if err := validateOffsetItems(snapshot.Offsets, topicPartitionCount(record.TopicPartitions, snapshot.Topic)); err != nil {
+			return fmt.Errorf("group subscription topic %q: %w", snapshot.Topic, err)
+		}
 	}
 	return nil
 }
@@ -329,6 +383,26 @@ func (c *Coordinator) writeGroupRegistration(groupName, topicName string, partit
 		Epoch:          epoch,
 		InitialOffsets: initial,
 		Timestamp:      time.Now().UTC(),
+	})
+}
+
+func (c *Coordinator) writeGroupSubscriptionRegistration(groupName string, topics []string, pattern string, partitionCounts map[string]int, epoch uint64, initial []TopicOffsetSnapshot) error {
+	partitions := make([]TopicPartition, 0)
+	for _, topicName := range topics {
+		for partition := 0; partition < partitionCounts[topicName]; partition++ {
+			partitions = append(partitions, TopicPartition{Topic: topicName, Partition: partition})
+		}
+	}
+	return c.writeConsumerMetadataRecord(ConsumerMetadataRecord{
+		Version:         ConsumerMetadataRecordVersionSubscriptions,
+		Type:            ConsumerMetadataRecordRegistration,
+		Group:           groupName,
+		Topics:          append([]string(nil), topics...),
+		TopicPattern:    pattern,
+		TopicPartitions: partitions,
+		Epoch:           epoch,
+		InitialOffsets:  initial,
+		Timestamp:       time.Now().UTC(),
 	})
 }
 
@@ -573,11 +647,17 @@ func materializeConsumerMetadata(
 		}
 		group := &GroupMetadata{
 			TopicName:         record.Topic,
+			Topics:            append([]string(nil), record.Topics...),
+			TopicPattern:      record.TopicPattern,
+			TopicPartitions:   append([]TopicPartition(nil), record.TopicPartitions...),
 			Members:           make(map[string]*MemberMetadata),
 			Partitions:        partitions,
 			Offsets:           make(map[string]map[int]uint64),
 			RegistrationEpoch: record.Epoch,
 			OffsetRevisions:   make(map[string]uint64),
+		}
+		if record.Version == ConsumerMetadataRecordVersionSubscriptions {
+			group.TopicName = subscriptionDisplayName(record.Topics, record.TopicPattern)
 		}
 		for _, snapshot := range record.InitialOffsets {
 			group.Offsets[snapshot.Topic] = offsetItemsToMap(snapshot.Offsets)
@@ -650,7 +730,7 @@ func materializeConsumerMetadata(
 			orphans++
 			continue
 		}
-		if !groupTopicMatches(group.TopicName, record.Topic) {
+		if !groupAcceptsTopic(group, record.Topic) {
 			return nil, nil, orphans, fmt.Errorf("offset snapshot topic %q does not match group %q topic %q", record.Topic, record.Group, group.TopicName)
 		}
 		currentRevision := group.OffsetRevisions[record.Topic]
@@ -659,9 +739,10 @@ func materializeConsumerMetadata(
 			continue
 		}
 		nextOffsets := offsetItemsToMap(record.Offsets)
+		partitionCount := groupTopicPartitionCount(group, record.Topic)
 		for partition := range nextOffsets {
-			if partition >= len(group.Partitions) {
-				return nil, nil, orphans, fmt.Errorf("offset snapshot partition %d exceeds group %q partition count %d", partition, record.Group, len(group.Partitions))
+			if partition >= partitionCount {
+				return nil, nil, orphans, fmt.Errorf("offset snapshot partition %d exceeds group %q topic %q partition count %d", partition, record.Group, record.Topic, partitionCount)
 			}
 		}
 		currentOffsets := group.Offsets[record.Topic]

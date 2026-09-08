@@ -230,14 +230,14 @@ graph TB
 |---|---|---|---|
 | Any broker | Any node | Config | `FIND_COORDINATOR`, `METADATA`, `CREATE`, `LIST` |
 | Group coordinator | Per group | `FIND_COORDINATOR group=<group>` | `JOIN_GROUP`, `SYNC_GROUP`, `LEAVE_GROUP`, `HEARTBEAT`, `COMMIT_OFFSET`, `BATCH_COMMIT`, `FETCH_OFFSET` |
-| Transaction coordinator | Per transactional id | `FIND_COORDINATOR transactional_id=<id>` | `INIT_PRODUCER_ID`, `BEGIN_TXN`, `TXN_PUBLISH`, `SEND_OFFSETS_TO_TXN`, `END_TXN`, `TXN_STATUS` |
+| Transaction coordinator | Per logical transaction shard | `FIND_COORDINATOR transactional_id=<id>` | `INIT_PRODUCER_ID`, `BEGIN_TXN`, `TXN_PUBLISH`, `SEND_OFFSETS_TO_TXN`, `END_TXN`, `TXN_STATUS` |
 | Partition leader | Per-partition | `METADATA` | `CONSUME`, `STREAM`, `PUBLISH` |
 
 ### Transaction Visibility Boundary
 
-Transactional output follows the normal partition-leader publish and replication path. A prepared commit writes idempotent records, appends a marker to every touched partition, applies one fenced bulk consumer offset scope, and then persists the final transaction decision. `read_committed` requires both the marker and matching final coordinator decision. A restored `committing` transaction is retried during startup recovery from the standalone journal or distributed metadata snapshot; records remain hidden until recovery completes.
+With `transactional_processing_v1`, transactional output follows the normal partition-leader publish and replication path when sent, but remains unresolved and invisible to `read_committed`. Commit durably prepares the decision, atomically advances the same group session's multi-topic input offsets, appends a marker to every output partition, and persists the final decision. Transactional IDs map to a stable set of logical coordinator shards (50 by default) whose count, owners, and fencing epochs are stored in Raft metadata. The count is fixed when the cluster is created; a broker configured with a different count is rejected before joining. A new shard owner retries prepared commit or abort work, while the previous owner is rejected by its stale coordinator epoch. Each owner also resolves timed-out transactions for its shards, so recovery work is distributed across active brokers.
 
-This contract covers broker records and one source consumer scope. It does not include external database, HTTP, or filesystem side effects.
+This is exactly-once processing inside the Cursus broker boundary for one fenced consumer group session. It does not include external database, HTTP, or filesystem side effects.
 
 ### Coordinator Pattern
 

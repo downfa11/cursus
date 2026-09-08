@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cursus-io/cursus/pkg/transaction"
 	"github.com/cursus-io/cursus/util"
 )
 
@@ -113,13 +114,21 @@ func (c *TCPClusterClient) sendHeartbeat(ctx context.Context, peers []string, no
 }
 
 func (c *TCPClusterClient) JoinCluster(peers []string, nodeID, addr string, discoveryPort int) error {
+	return c.JoinClusterWithTransactionCoordinatorShards(peers, nodeID, addr, discoveryPort, transaction.DefaultCoordinatorShardCount)
+}
+
+func (c *TCPClusterClient) JoinClusterWithTransactionCoordinatorShards(peers []string, nodeID, addr string, discoveryPort, shardCount int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	return c.joinClusterWithContext(ctx, peers, nodeID, addr, discoveryPort)
+	return c.joinClusterWithContextAndShards(ctx, peers, nodeID, addr, discoveryPort, shardCount)
 }
 
 func (c *TCPClusterClient) joinClusterWithContext(ctx context.Context, peers []string, nodeID, addr string, discoveryPort int) error {
+	return c.joinClusterWithContextAndShards(ctx, peers, nodeID, addr, discoveryPort, transaction.DefaultCoordinatorShardCount)
+}
+
+func (c *TCPClusterClient) joinClusterWithContextAndShards(ctx context.Context, peers []string, nodeID, addr string, discoveryPort, shardCount int) error {
 	apiPort := discoveryPort
 	if apiPort == 0 {
 		apiPort = 8000
@@ -144,7 +153,7 @@ func (c *TCPClusterClient) joinClusterWithContext(ctx context.Context, peers []s
 			// deadline. Keep each connection attempt bounded while retaining the
 			// caller's cancellation and overall deadline as the outer limit.
 			attemptCtx, cancel := context.WithTimeout(ctx, c.timeout)
-			err := c.sendJoinCommand(attemptCtx, targetAddr, nodeID, addr)
+			err := c.sendJoinCommand(attemptCtx, targetAddr, nodeID, addr, shardCount)
 			cancel()
 			if err == nil {
 				return nil
@@ -161,10 +170,11 @@ func (c *TCPClusterClient) joinClusterWithContext(ctx context.Context, peers []s
 	return fmt.Errorf("failed to join cluster after 5 attempts")
 }
 
-func (c *TCPClusterClient) sendJoinCommand(ctx context.Context, addr, nodeID, localAddr string) error {
-	payload := map[string]string{
-		"node_id": nodeID,
-		"address": localAddr,
+func (c *TCPClusterClient) sendJoinCommand(ctx context.Context, addr, nodeID, localAddr string, shardCount int) error {
+	payload := map[string]interface{}{
+		"node_id":                        nodeID,
+		"address":                        localAddr,
+		"transaction_coordinator_shards": shardCount,
 	}
 	body, _ := json.Marshal(payload)
 	joinCmd := fmt.Sprintf("JOIN_CLUSTER %s", string(body))

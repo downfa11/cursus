@@ -34,8 +34,9 @@ type CommandHandler struct {
 
 	coordCache               map[string]coordCacheEntry
 	coordCacheMu             sync.RWMutex
-	txnApplyMu               sync.Mutex
 	txnJournal               *transaction.Journal
+	txnStateStore            transaction.ShardStateStore
+	txnStateWriter           transaction.ShardStateWriter
 	transactionStateSyncHook func(string) error
 	transactionStateLocks    [transactionStateLockStripes]sync.Mutex
 	partitionWriteLocks      sync.Map // map[string]*sync.Mutex
@@ -57,6 +58,20 @@ func transactionalIDExpiration(cfg *config.Config) time.Duration {
 		return 7 * 24 * time.Hour
 	}
 	return time.Duration(cfg.TransactionalIDExpirationMS) * time.Millisecond
+}
+
+func transactionTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.TransactionTimeoutMS <= 0 {
+		return 60 * time.Second
+	}
+	return time.Duration(cfg.TransactionTimeoutMS) * time.Millisecond
+}
+
+func transactionCoordinatorShardCount(cfg *config.Config) int {
+	if cfg == nil || cfg.TransactionCoordinatorShards <= 0 {
+		return transaction.DefaultCoordinatorShardCount
+	}
+	return cfg.TransactionCoordinatorShards
 }
 
 // commandEntry defines a single command routing rule.
@@ -101,7 +116,7 @@ func NewCommandHandler(
 		coordCache:    make(map[string]coordCacheEntry),
 		Cluster:       cc,
 		ESHandler:     eventsource.NewHandler(tm),
-		TxnManager:    transaction.NewManagerWithExpiration(transactionalIDExpiration(cfg)),
+		TxnManager:    transaction.NewManagerWithExpirationAndShards(transactionalIDExpiration(cfg), transactionCoordinatorShardCount(cfg)),
 	}
 	if tm != nil {
 		tm.SetTransactionDecisionResolver(ch.TxnManager)
@@ -110,6 +125,9 @@ func NewCommandHandler(
 		if fsm := cc.RaftManager.GetFSM(); fsm != nil {
 			fsm.SetTransactionManager(ch.TxnManager)
 		}
+	}
+	if ch.isDistributed() {
+		ch.txnStateWriter = transaction.ShardStateWriterFunc(ch.persistReplicatedTransactionState)
 	}
 	ch.commands = []commandEntry{
 		{prefix: "AUTH ", exact: false, handler: func(cmd string, ctx *ClientContext) string { return ch.handleAuth(cmd, ctx) }},
@@ -127,9 +145,9 @@ func NewCommandHandler(
 		{prefix: "PUBLISH ", exact: false, helpOrder: 4, permissions: []string{PermissionTopicWrite}, handler: func(cmd string, ctx *ClientContext) string { return ch.handlePublish(cmd, ctx) }},
 		{prefix: "CONSUME ", exact: false, helpOrder: 5, permissions: []string{PermissionTopicRead, PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.validateConsumeSyntax(cmd, cmd) }},
 		{prefix: "STREAM ", exact: false, helpOrder: 6, permissions: []string{PermissionTopicRead, PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.validateStreamSyntax(cmd, cmd) }},
-		{prefix: "REGISTER_GROUP ", exact: false, helpOrder: 21, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleRegisterGroup(cmd) }},
+		{prefix: "REGISTER_GROUP ", exact: false, helpOrder: 21, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleRegisterGroup(cmd, ctx) }},
 		{prefix: "JOIN_GROUP ", exact: false, helpOrder: 7, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleJoinGroup(cmd, ctx) }},
-		{prefix: "SYNC_GROUP ", exact: false, helpOrder: 8, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleSyncGroup(cmd) }},
+		{prefix: "SYNC_GROUP ", exact: false, helpOrder: 8, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleSyncGroup(cmd, ctx) }},
 		{prefix: "LEAVE_GROUP ", exact: false, helpOrder: 9, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleLeaveGroup(cmd) }},
 		{prefix: "FETCH_OFFSET ", exact: false, helpOrder: 13, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleFetchOffset(cmd) }},
 		{prefix: "LIST_OFFSETS", exact: true, helpOrder: 14, permissions: []string{PermissionTopicRead}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleListOffsets(cmd, ctx) }},
@@ -139,12 +157,12 @@ func NewCommandHandler(
 		{prefix: "HEARTBEAT ", exact: false, helpOrder: 10, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleHeartbeat(cmd) }},
 		{prefix: "COMMIT_OFFSET ", exact: false, helpOrder: 11, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleCommitOffset(cmd) }},
 		{prefix: "BATCH_COMMIT ", exact: false, helpOrder: 12, permissions: []string{PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleBatchCommit(cmd) }},
-		{prefix: "INIT_PRODUCER_ID ", exact: false, helpOrder: 15, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleInitProducerID(cmd) }},
-		{prefix: "BEGIN_TXN ", exact: false, helpOrder: 16, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleBeginTxn(cmd) }},
+		{prefix: "INIT_PRODUCER_ID ", exact: false, helpOrder: 15, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleInitProducerID(cmd, ctx) }},
+		{prefix: "BEGIN_TXN ", exact: false, helpOrder: 16, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleBeginTxn(cmd, ctx) }},
 		{prefix: "TXN_PUBLISH ", exact: false, helpOrder: 17, permissions: []string{PermissionTransaction, PermissionTopicWrite}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleTxnPublish(cmd, ctx) }},
-		{prefix: "SEND_OFFSETS_TO_TXN ", exact: false, helpOrder: 18, permissions: []string{PermissionTransaction, PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleSendOffsetsToTxn(cmd) }},
-		{prefix: "END_TXN ", exact: false, helpOrder: 19, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleEndTxn(cmd) }},
-		{prefix: "TXN_STATUS ", exact: false, helpOrder: 20, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleTxnStatus(cmd) }},
+		{prefix: "SEND_OFFSETS_TO_TXN ", exact: false, helpOrder: 18, permissions: []string{PermissionTransaction, PermissionGroup}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleSendOffsetsToTxn(cmd, ctx) }},
+		{prefix: "END_TXN ", exact: false, helpOrder: 19, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleEndTxn(cmd, ctx) }},
+		{prefix: "TXN_STATUS ", exact: false, helpOrder: 20, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleTxnStatus(cmd, ctx) }},
 		{prefix: "APPEND_STREAM ", exact: false, helpOrder: 25, permissions: []string{PermissionTopicWrite}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleAppendStream(cmd) }},
 		{prefix: "STREAM_VERSION ", exact: false, helpOrder: 29, permissions: []string{PermissionTopicRead}, handler: func(cmd string, ctx *ClientContext) string {
 			return ch.handleEventSourceRoutedCommand(cmd, "STREAM_VERSION ", ch.ESHandler.HandleStreamVersion)

@@ -21,6 +21,35 @@ func (r *testTransactionDecisionResolver) TransactionDecision(string, int64) (st
 	return r.state, r.known
 }
 
+type testCoordinatorEpochDecisionResolver struct {
+	state            string
+	coordinatorEpoch int64
+	known            bool
+}
+
+func (r *testCoordinatorEpochDecisionResolver) TransactionDecision(string, int64) (string, bool) {
+	return r.state, r.known
+}
+
+func (r *testCoordinatorEpochDecisionResolver) TransactionDecisionWithCoordinatorEpoch(string, int64) (string, int64, bool) {
+	return r.state, r.coordinatorEpoch, r.known
+}
+
+func TestTransactionDecisionRejectsMarkerFromPreviousCoordinatorEpoch(t *testing.T) {
+	resolver := &testCoordinatorEpochDecisionResolver{
+		state:            types.TransactionStateCommitted,
+		coordinatorEpoch: 8,
+		known:            true,
+	}
+	key := transactionMarkerKey{transactionalID: "tx-fenced-marker", epoch: 3}
+	require.False(t, transactionDecisionMatchesMarker(key, transactionMarkerInfo{
+		marker: types.TransactionMarkerCommit, coordinatorEpoch: 7,
+	}, resolver))
+	require.True(t, transactionDecisionMatchesMarker(key, transactionMarkerInfo{
+		marker: types.TransactionMarkerCommit, coordinatorEpoch: 8,
+	}, resolver))
+}
+
 func TestPartition_RestoresPersistedHWMCheckpoint(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.LogDir = t.TempDir()
