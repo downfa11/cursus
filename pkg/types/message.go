@@ -30,6 +30,8 @@ type Message struct {
 	SchemaVersion    uint32
 	AggregateVersion uint64
 	Metadata         string
+	EventID          string
+	PayloadDigest    string
 
 	TransactionalID              string
 	TransactionState             string
@@ -74,6 +76,8 @@ type DiskMessage struct {
 	SchemaVersion    uint32
 	AggregateVersion uint64
 	Metadata         string
+	EventID          string
+	PayloadDigest    string
 
 	TransactionalID              string
 	TransactionState             string

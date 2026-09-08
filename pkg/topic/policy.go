@@ -17,13 +17,14 @@ const (
 )
 
 type Policy struct {
-	RetentionHours int      `json:"retention_hours,omitempty"`
-	RetentionBytes int64    `json:"retention_bytes,omitempty"`
-	CleanupPolicy  string   `json:"cleanup_policy"`
-	Partitioner    string   `json:"partitioner"`
-	AuthPolicy     string   `json:"auth_policy"`
-	ReadACL        []string `json:"read_acl,omitempty"`
-	WriteACL       []string `json:"write_acl,omitempty"`
+	RetentionHours  int      `json:"retention_hours,omitempty"`
+	RetentionBytes  int64    `json:"retention_bytes,omitempty"`
+	CleanupPolicy   string   `json:"cleanup_policy"`
+	Partitioner     string   `json:"partitioner"`
+	AuthPolicy      string   `json:"auth_policy"`
+	ReadACL         []string `json:"read_acl,omitempty"`
+	WriteACL        []string `json:"write_acl,omitempty"`
+	AggregateReplay bool     `json:"aggregate_replay,omitempty"`
 }
 
 func DefaultPolicy() Policy {
@@ -85,6 +86,9 @@ func (p Policy) Normalize() (Policy, error) {
 }
 
 func validateCleanupPolicyForTopic(policy Policy, cfg *config.Config, eventSourcing bool) error {
+	if policy.AggregateReplay && !eventSourcing {
+		return fmt.Errorf("aggregate_replay requires event_sourcing")
+	}
 	if !config.HasCleanupPolicy(policy.CleanupPolicy, config.CleanupPolicyCompact) {
 		return nil
 	}

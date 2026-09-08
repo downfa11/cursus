@@ -67,6 +67,14 @@ func (ch *CommandHandler) handleCreate(cmd string, ctx ...*ClientContext) string
 	if existing := ch.TopicManager.GetTopic(topicName); existing != nil && existing.IsEventSourcing {
 		effectiveEventSourcing = true
 	}
+	if policy.AggregateReplay {
+		if !effectiveEventSourcing {
+			return "ERROR: invalid_topic_policy field=aggregate_replay reason=\"aggregate replay requires event_sourcing=true\""
+		}
+		if !idempotent {
+			return "ERROR: invalid_topic_policy field=idempotent reason=\"aggregate replay requires idempotent=true\""
+		}
+	}
 	if config.HasCleanupPolicy(policy.CleanupPolicy, config.CleanupPolicyCompact) {
 		if effectiveEventSourcing {
 			return `ERROR: invalid_topic_policy field=cleanup_policy reason="compaction is not supported for event-sourcing topics"`
@@ -147,6 +155,9 @@ func parseTopicPolicy(args map[string]string, defaultCleanupPolicy string) (topi
 	}
 	if v := args["partitioner"]; v != "" {
 		policy.Partitioner = v
+	}
+	if v, ok := args["aggregate_replay"]; ok {
+		policy.AggregateReplay = strings.EqualFold(v, "true")
 	}
 	if v := args["auth_policy"]; v != "" {
 		policy.AuthPolicy = v

@@ -123,6 +123,9 @@ func (ch *CommandHandler) handlePublish(cmd string, ctx ...*ClientContext) strin
 		util.Warn("ch publish: topic '%s' does not exist after retries", topicName)
 		return fmt.Sprintf("ERROR: topic_not_found topic=%s", topicName)
 	}
+	if t.Policy.AggregateReplay && !strings.EqualFold(args["internal_txn_publish"], "true") {
+		return fmt.Sprintf("ERROR: aggregate_publish_requires_append_stream topic=%s", topicName)
+	}
 	if strings.EqualFold(args["internal_txn_publish"], "true") {
 		if clientCtx == nil || !clientCtx.Internal {
 			return "ERROR: internal_txn_publish_forbidden command=PUBLISH"

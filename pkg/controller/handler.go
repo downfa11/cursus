@@ -170,6 +170,8 @@ func NewCommandHandler(
 		{prefix: "END_TXN ", exact: false, helpOrder: 19, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleEndTxn(cmd, ctx) }},
 		{prefix: "TXN_STATUS ", exact: false, helpOrder: 20, permissions: []string{PermissionTransaction}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleTxnStatus(cmd, ctx) }},
 		{prefix: "APPEND_STREAM ", exact: false, helpOrder: 25, permissions: []string{PermissionTopicWrite}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleAppendStream(cmd) }},
+		{prefix: "AGGREGATE_REPLAY_PROOF ", exact: false, helpOrder: 40, permissions: []string{PermissionTopicRead}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleAggregateReplayProof(cmd) }},
+		{prefix: "AGGREGATE_EVENT_RANGE_READ ", exact: false, helpOrder: 41, permissions: []string{PermissionTopicRead}, handler: func(cmd string, ctx *ClientContext) string { return ch.handleAggregateEventRangeRead(cmd) }},
 		{prefix: "STREAM_VERSION ", exact: false, helpOrder: 29, permissions: []string{PermissionTopicRead}, handler: func(cmd string, ctx *ClientContext) string {
 			return ch.handleEventSourceRoutedCommand(cmd, "STREAM_VERSION ", ch.ESHandler.HandleStreamVersion)
 		}},
