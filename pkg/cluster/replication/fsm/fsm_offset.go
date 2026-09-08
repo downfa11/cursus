@@ -75,7 +75,7 @@ func (f *BrokerFSM) applyBatchOffsetSyncCommand(jsonData string) interface{} {
 		if cmd.Member == "" || cmd.Generation == nil {
 			return fmt.Errorf("multi-topic offset update requires member and generation")
 		}
-		return f.cd.ValidateAndCommitTopicOffsetsBulkForEpoch(cmd.Group, cmd.Member, *cmd.Generation, cmd.RegistrationEpoch, cmd.OffsetsByTopic)
+		return f.cd.ApplyFencedTopicOffsetUpdateFromFSM(cmd.Group, cmd.Member, *cmd.Generation, cmd.RegistrationEpoch, cmd.OffsetsByTopic)
 	}
 
 	if cmd.Member != "" && cmd.Generation != nil {

@@ -101,6 +101,10 @@ func (s *managerShard) reindex(tx *Transaction) {
 			s.deadlineByID[tx.ID] = item
 		}
 	case StateCommitted, StateAborted:
+		if tx.State == StateCommitted && tx.Mode == ModeProcessingV1 && len(tx.Offsets) > 0 && !tx.OffsetsMaterialized {
+			s.prepared[tx.ID] = struct{}{}
+			return
+		}
 		s.addExpiry(tx)
 	}
 }

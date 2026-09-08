@@ -332,6 +332,11 @@ func (ch *CommandHandler) handleEndTxn(cmd string, contexts ...*ClientContext) s
 	}
 
 	if current.State == transaction.StateCommitted {
+		if current.Mode == transaction.ModeProcessingV1 {
+			if err := ch.materializeAndCheckpointTransactionOffsets(current.ID, current.Offsets); err != nil {
+				return fmt.Sprintf("ERROR: transaction_offset_materialization_failed reason=%q", err.Error())
+			}
+		}
 		return fmt.Sprintf("OK transactional_id=%s state=committed messages=%d offsets=%d", txnID, len(current.Messages), len(current.Offsets))
 	}
 	if current.State == transaction.StateAborted {
@@ -340,6 +345,13 @@ func (ch *CommandHandler) handleEndTxn(cmd string, contexts ...*ClientContext) s
 	if current.State == transaction.StateOpen {
 		if err := ch.validateTransaction(current); err != nil {
 			return fmt.Sprintf("ERROR: transaction_commit_failed state=open reason=%q", err.Error())
+		}
+		if current.Mode == transaction.ModeProcessingV1 && len(current.Offsets) > 0 {
+			var err error
+			current, err = ch.prepareTransactionOffsetRecords(current)
+			if err != nil {
+				return fmt.Sprintf("ERROR: transaction_offset_prepare_failed state=open reason=%q", err.Error())
+			}
 		}
 	}
 
@@ -392,6 +404,14 @@ func (ch *CommandHandler) recoverPreparedTransactionsBatch(shards []int, limit i
 		if err != nil {
 			stateLock.Unlock()
 			return more, fmt.Errorf("reload transaction %s for recovery: %w", pendingTx.ID, err)
+		}
+		if tx.State == transaction.StateCommitted && tx.Mode == transaction.ModeProcessingV1 && !tx.OffsetsMaterialized {
+			err = ch.materializeAndCheckpointTransactionOffsets(tx.ID, tx.Offsets)
+			stateLock.Unlock()
+			if err != nil {
+				return more, fmt.Errorf("materialize recovered transaction %s offsets: %w", tx.ID, err)
+			}
+			continue
 		}
 		if tx.State != transaction.StateCommitting && tx.State != transaction.StatePrepareCommit && tx.State != transaction.StatePrepareAbort {
 			stateLock.Unlock()
@@ -569,8 +589,10 @@ func (ch *CommandHandler) applyTransaction(tx *transaction.Transaction) error {
 				return err
 			}
 		}
-		if err := ch.commitTransactionOffsets(tx.Offsets); err != nil {
-			return err
+		if tx.Mode != transaction.ModeProcessingV1 {
+			if err := ch.commitTransactionOffsets(tx.Offsets); err != nil {
+				return err
+			}
 		}
 		if err := ch.appendTransactionMarkers(tx, types.TransactionMarkerCommit); err != nil {
 			return err
@@ -578,6 +600,117 @@ func (ch *CommandHandler) applyTransaction(tx *transaction.Transaction) error {
 		return nil
 	}
 	return ch.withTransactionOffsetFences(tx.Offsets, apply)
+}
+
+func (ch *CommandHandler) prepareTransactionOffsetRecords(tx *transaction.Transaction) (*transaction.Transaction, error) {
+	if tx == nil || tx.State != transaction.StateOpen || tx.Mode != transaction.ModeProcessingV1 {
+		return tx, nil
+	}
+	records, err := transactionalOffsetRecords(tx)
+	if err != nil {
+		return nil, err
+	}
+	topic := ch.TopicManager.GetTopic("__consumer_offsets")
+	if topic == nil {
+		return nil, fmt.Errorf("consumer offset topic is unavailable")
+	}
+	type preparedRecord struct {
+		record    coordinator.ConsumerMetadataRecord
+		payload   []byte
+		key       string
+		partition int
+	}
+	prepared := make([]preparedRecord, 0, len(records))
+	for _, record := range records {
+		payload, key, encodeErr := coordinator.EncodeConsumerMetadataRecord(record)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		partition := topic.GetPartitionForMessage(types.Message{Key: key})
+		if err := ch.TxnManager.AddParticipant(tx.ID, tx.Producer, tx.Epoch, transaction.Participant{Topic: "__consumer_offsets", Partition: partition}, tx.Deadline); err != nil {
+			return nil, err
+		}
+		prepared = append(prepared, preparedRecord{record: record, payload: payload, key: key, partition: partition})
+	}
+	if err := ch.syncTransactionState(tx.ID); err != nil {
+		return nil, err
+	}
+	current, err := ch.TxnManager.Status(tx.ID)
+	if err != nil {
+		return nil, err
+	}
+	finalRecords, err := transactionalOffsetRecords(current)
+	if err != nil {
+		return nil, err
+	}
+	if len(finalRecords) != len(prepared) {
+		return nil, fmt.Errorf("transaction offset record set changed while preparing")
+	}
+	for i, record := range finalRecords {
+		payload, key, encodeErr := coordinator.EncodeConsumerMetadataRecord(record)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		if key != prepared[i].key {
+			return nil, fmt.Errorf("transaction offset record partition key changed while preparing")
+		}
+		prepared[i].record = record
+		prepared[i].payload = payload
+	}
+	seqByPartition := make(map[int]uint64)
+	for _, item := range prepared {
+		seqByPartition[item.partition]++
+		msg := types.Message{
+			Payload:          string(item.payload),
+			Key:              item.key,
+			ProducerID:       tx.Producer,
+			SeqNum:           seqByPartition[item.partition],
+			Epoch:            tx.Epoch,
+			TransactionalID:  tx.ID,
+			TransactionState: types.TransactionStateOpen,
+		}
+		if err := ch.publishCommittedTransactionMessage(transaction.MessageOperation{Topic: "__consumer_offsets", Partition: item.partition, Message: msg}); err != nil {
+			return nil, err
+		}
+	}
+	return current, nil
+}
+
+func transactionalOffsetRecords(tx *transaction.Transaction) ([]coordinator.ConsumerMetadataRecord, error) {
+	if tx == nil || len(tx.Offsets) == 0 {
+		return nil, nil
+	}
+	byTopic := make(map[string][]coordinator.OffsetItem)
+	scope := tx.Offsets[0]
+	for _, op := range tx.Offsets {
+		if op.Group != scope.Group || op.Member != scope.Member || op.Generation != scope.Generation || op.RegistrationEpoch != scope.RegistrationEpoch {
+			return nil, fmt.Errorf("transaction offset scope mismatch")
+		}
+		byTopic[op.Topic] = append(byTopic[op.Topic], coordinator.OffsetItem{Partition: op.Partition, Offset: op.Offset})
+	}
+	topics := make([]string, 0, len(byTopic))
+	for topicName := range byTopic {
+		topics = append(topics, topicName)
+	}
+	sort.Strings(topics)
+	records := make([]coordinator.ConsumerMetadataRecord, 0, len(topics))
+	for _, topicName := range topics {
+		records = append(records, coordinator.ConsumerMetadataRecord{
+			Version:          coordinator.ConsumerMetadataRecordVersionTransactions,
+			Type:             coordinator.ConsumerMetadataRecordTransactionalOffsetSnapshot,
+			Group:            scope.Group,
+			Topic:            topicName,
+			Epoch:            scope.RegistrationEpoch,
+			Revision:         tx.Revision,
+			Offsets:          byTopic[topicName],
+			TransactionalID:  tx.ID,
+			ProducerID:       tx.Producer,
+			ProducerEpoch:    tx.Epoch,
+			CoordinatorEpoch: tx.CoordinatorEpoch,
+			Timestamp:        tx.CreatedAt.UTC(),
+		})
+	}
+	return records, nil
 }
 
 func (ch *CommandHandler) validateTransaction(tx *transaction.Transaction) error {
@@ -1126,9 +1259,46 @@ func (ch *CommandHandler) persistFinalTransactionDecision(snap *transaction.Snap
 		}
 	}
 	if ch.isDistributed() {
+		if snap.State == transaction.StateCommitted && snap.Mode == transaction.ModeProcessingV1 {
+			return ch.materializeAndCheckpointTransactionOffsets(snap.ID, snap.Offsets)
+		}
 		return nil
 	}
-	return ch.TxnManager.ApplyReplicatedSnapshot(snap)
+	if err := ch.TxnManager.ApplyReplicatedSnapshot(snap); err != nil {
+		return err
+	}
+	if snap.State == transaction.StateCommitted && snap.Mode == transaction.ModeProcessingV1 {
+		return ch.materializeAndCheckpointTransactionOffsets(snap.ID, snap.Offsets)
+	}
+	return nil
+}
+
+func (ch *CommandHandler) materializeCommittedTransactionOffsets(ops []transaction.OffsetOperation) error {
+	if len(ops) == 0 || ch.Coordinator == nil {
+		return nil
+	}
+	scope := ops[0]
+	offsets := make(map[string][]coordinator.OffsetItem)
+	for _, op := range ops {
+		if op.Group != scope.Group || op.RegistrationEpoch != scope.RegistrationEpoch {
+			return fmt.Errorf("transaction offset scope mismatch during materialization")
+		}
+		offsets[op.Topic] = append(offsets[op.Topic], coordinator.OffsetItem{Partition: op.Partition, Offset: op.Offset})
+	}
+	return ch.Coordinator.MaterializeCommittedTransactionOffsets(scope.Group, scope.RegistrationEpoch, offsets)
+}
+
+func (ch *CommandHandler) materializeAndCheckpointTransactionOffsets(txnID string, ops []transaction.OffsetOperation) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	if err := ch.materializeCommittedTransactionOffsets(ops); err != nil {
+		return err
+	}
+	if err := ch.TxnManager.MarkOffsetsMaterialized(txnID); err != nil {
+		return err
+	}
+	return ch.syncTransactionState(txnID)
 }
 
 func (ch *CommandHandler) persistReplicatedTransactionState(shardID int, snap *transaction.Snapshot) error {

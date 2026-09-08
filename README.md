@@ -23,7 +23,7 @@ Cursus is a lightweight, partitioned-log message broker written in Go. It runs a
 - Partitioned topics with key-hash or round-robin routing and per-partition ordering.
 - Buffered, batched disk persistence, configurable segment rolling, mmap reads, retention by time or size, and recovered high-watermark checkpoints.
 - Durable single-topic and multi-topic consumer groups with generation/lifecycle fencing, broker-owned monotonic `nextOffset` commits, restart resume, and topic-partition isolation.
-- Exactly-once broker processing for consume-process-produce transactions: idempotent output, atomic multi-topic source-offset advancement, durable prepare/final decisions, fenced coordinator-shard failover, timeout abort, recovery, and `read_committed` isolation.
+- Exactly-once broker processing for consume-process-produce transactions: idempotent output, transactional multi-topic offsets in `__consumer_offsets`, durable prepare/final decisions, fenced coordinator-shard failover, timeout abort, recovery, and `read_committed` isolation.
 - Raft-backed metadata, partition-leader routing, replication quorum checks, follower catch-up, and leader redirects.
 - Event streams with optimistic concurrency, committed-tail reads, durable indexes, and quorum-replicated snapshots.
 - TLS, client token authentication and authorization, per-topic ACLs, broker-to-broker mTLS/internal command boundaries, health probes, and Prometheus metrics.

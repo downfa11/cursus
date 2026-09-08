@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/cursus-io/cursus/pkg/types"
@@ -71,44 +72,55 @@ type Participant struct {
 }
 
 type Transaction struct {
-	ID               string
-	Mode             Mode
-	Producer         string
-	Epoch            int64
-	CoordinatorEpoch int64
-	Revision         uint64
-	Ready            bool
-	Expired          bool
-	State            State
-	Messages         []MessageOperation
-	Offsets          []OffsetOperation
-	Participants     []Participant
-	Deadline         time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                  string
+	Mode                Mode
+	Producer            string
+	Epoch               int64
+	CoordinatorEpoch    int64
+	Revision            uint64
+	Ready               bool
+	Expired             bool
+	OffsetsMaterialized bool
+	State               State
+	Messages            []MessageOperation
+	Offsets             []OffsetOperation
+	Participants        []Participant
+	Deadline            time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type Snapshot struct {
-	ID               string             `json:"id"`
-	Mode             Mode               `json:"mode,omitempty"`
-	Producer         string             `json:"producer"`
-	Epoch            int64              `json:"epoch"`
-	CoordinatorEpoch int64              `json:"coordinator_epoch,omitempty"`
-	Revision         uint64             `json:"revision,omitempty"`
-	Ready            bool               `json:"ready,omitempty"`
-	Expired          bool               `json:"expired,omitempty"`
-	State            State              `json:"state"`
-	Messages         []MessageOperation `json:"messages,omitempty"`
-	Offsets          []OffsetOperation  `json:"offsets,omitempty"`
-	Participants     []Participant      `json:"participants,omitempty"`
-	Deadline         time.Time          `json:"deadline,omitempty"`
-	CreatedAt        time.Time          `json:"created_at"`
-	UpdatedAt        time.Time          `json:"updated_at"`
+	ID                  string             `json:"id"`
+	Mode                Mode               `json:"mode,omitempty"`
+	Producer            string             `json:"producer"`
+	Epoch               int64              `json:"epoch"`
+	CoordinatorEpoch    int64              `json:"coordinator_epoch,omitempty"`
+	Revision            uint64             `json:"revision,omitempty"`
+	Ready               bool               `json:"ready,omitempty"`
+	Expired             bool               `json:"expired,omitempty"`
+	OffsetsMaterialized bool               `json:"offsets_materialized,omitempty"`
+	State               State              `json:"state"`
+	Messages            []MessageOperation `json:"messages,omitempty"`
+	Offsets             []OffsetOperation  `json:"offsets,omitempty"`
+	Participants        []Participant      `json:"participants,omitempty"`
+	Deadline            time.Time          `json:"deadline,omitempty"`
+	CreatedAt           time.Time          `json:"created_at"`
+	UpdatedAt           time.Time          `json:"updated_at"`
 }
 
 type Manager struct {
-	shards     []managerShard
-	expiration time.Duration
+	shards            []managerShard
+	expiration        time.Duration
+	committedOffsetMu sync.RWMutex
+	committedOffsets  map[committedOffsetKey]uint64
+}
+
+type committedOffsetKey struct {
+	group             string
+	topic             string
+	partition         int
+	registrationEpoch uint64
 }
 
 func NewManager() *Manager {
@@ -126,7 +138,7 @@ func NewManagerWithExpirationAndShards(expiration time.Duration, shardCount int)
 	if shardCount <= 0 {
 		shardCount = DefaultCoordinatorShardCount
 	}
-	m := &Manager{shards: make([]managerShard, shardCount), expiration: expiration}
+	m := &Manager{shards: make([]managerShard, shardCount), expiration: expiration, committedOffsets: make(map[committedOffsetKey]uint64)}
 	for i := range m.shards {
 		m.shards[i] = newManagerShard(expiration)
 	}
@@ -472,6 +484,28 @@ func (m *Manager) Commit(id string) error {
 	tx.Revision++
 	tx.UpdatedAt = time.Now()
 	s.reindex(tx)
+	m.indexCommittedOffsets(tx.Offsets)
+	return nil
+}
+
+// MarkOffsetsMaterialized records that __consumer_offsets now contains the
+// ordinary recovery snapshot, allowing staged offset payloads to be retired.
+func (m *Manager) MarkOffsetsMaterialized(id string) error {
+	s := m.shardForID(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx := s.txns[id]
+	if tx == nil || tx.State != StateCommitted {
+		return fmt.Errorf("transaction %s is not committed", id)
+	}
+	if tx.OffsetsMaterialized {
+		return nil
+	}
+	tx.OffsetsMaterialized = true
+	tx.Offsets = nil
+	tx.Revision++
+	tx.UpdatedAt = time.Now()
+	s.reindex(tx)
 	return nil
 }
 
@@ -689,6 +723,9 @@ func (m *Manager) ExportState() map[string]*Snapshot {
 }
 
 func (m *Manager) ImportState(state map[string]*Snapshot) {
+	m.committedOffsetMu.Lock()
+	m.committedOffsets = make(map[committedOffsetKey]uint64)
+	m.committedOffsetMu.Unlock()
 	for i := range m.shards {
 		m.shards[i].mu.Lock()
 		m.shards[i].txns = make(map[string]*Transaction)
@@ -710,6 +747,9 @@ func (m *Manager) ImportState(state map[string]*Snapshot) {
 		}
 		tx := transactionFromSnapshot(snap)
 		m.shards[CoordinatorShardForCount(id, len(m.shards))].put(tx)
+		if tx.State == StateCommitted {
+			m.indexCommittedOffsets(tx.Offsets)
+		}
 	}
 }
 
@@ -721,6 +761,9 @@ func (m *Manager) ApplySnapshot(snap *Snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.put(transactionFromSnapshot(snap))
+	if snap.State == StateCommitted {
+		m.indexCommittedOffsets(snap.Offsets)
+	}
 }
 
 func (m *Manager) ApplyReplicatedSnapshot(snap *Snapshot) error {
@@ -734,6 +777,9 @@ func (m *Manager) ApplyReplicatedSnapshot(snap *Snapshot) error {
 	current, ok := s.txns[snap.ID]
 	if !ok || snapshotIsNewer(current, snap) {
 		s.put(transactionFromSnapshot(snap))
+		if snap.State == StateCommitted {
+			m.indexCommittedOffsets(snap.Offsets)
+		}
 		return nil
 	}
 	if snapshotsEqual(current, snap) {
@@ -749,6 +795,26 @@ func (m *Manager) ApplyReplicatedSnapshot(snap *Snapshot) error {
 	return fmt.Errorf("stale transaction snapshot transactional_id=%s current_epoch=%d current_revision=%d incoming_epoch=%d incoming_revision=%d", snap.ID, current.Epoch, current.Revision, snap.Epoch, snap.Revision)
 }
 
+func (m *Manager) indexCommittedOffsets(offsets []OffsetOperation) {
+	m.committedOffsetMu.Lock()
+	defer m.committedOffsetMu.Unlock()
+	for _, op := range offsets {
+		key := committedOffsetKey{group: op.Group, topic: op.Topic, partition: op.Partition, registrationEpoch: op.RegistrationEpoch}
+		if current, ok := m.committedOffsets[key]; !ok || op.Offset > current {
+			m.committedOffsets[key] = op.Offset
+		}
+	}
+}
+
+// CommittedOffset is an O(1) decision-gated view used by the consumer group
+// coordinator. Prepared and aborted transactions are never indexed.
+func (m *Manager) CommittedOffset(group, topic string, partition int, registrationEpoch uint64) (uint64, bool) {
+	m.committedOffsetMu.RLock()
+	defer m.committedOffsetMu.RUnlock()
+	offset, ok := m.committedOffsets[committedOffsetKey{group: group, topic: topic, partition: partition, registrationEpoch: registrationEpoch}]
+	return offset, ok
+}
+
 func committedSnapshotSucceeds(current *Transaction, incoming *Snapshot) bool {
 	return current != nil && incoming != nil &&
 		current.ID == incoming.ID &&
@@ -761,6 +827,7 @@ func committedSnapshotSucceeds(current *Transaction, incoming *Snapshot) bool {
 		current.Revision == incoming.Revision+1 &&
 		current.Ready == incoming.Ready &&
 		current.Expired == incoming.Expired &&
+		current.OffsetsMaterialized == incoming.OffsetsMaterialized &&
 		current.CreatedAt.Equal(incoming.CreatedAt) &&
 		reflect.DeepEqual(current.Messages, incoming.Messages) &&
 		reflect.DeepEqual(current.Offsets, incoming.Offsets) &&
@@ -790,6 +857,7 @@ func snapshotsEqual(current *Transaction, incoming *Snapshot) bool {
 		current.Revision == incoming.Revision &&
 		current.Ready == incoming.Ready &&
 		current.Expired == incoming.Expired &&
+		current.OffsetsMaterialized == incoming.OffsetsMaterialized &&
 		current.State == incoming.State &&
 		current.CreatedAt.Equal(incoming.CreatedAt) &&
 		current.UpdatedAt.Equal(incoming.UpdatedAt) &&
@@ -849,41 +917,43 @@ func snapshot(tx *Transaction) *Snapshot {
 		return nil
 	}
 	return &Snapshot{
-		ID:               tx.ID,
-		Mode:             tx.Mode,
-		Producer:         tx.Producer,
-		Epoch:            tx.Epoch,
-		CoordinatorEpoch: tx.CoordinatorEpoch,
-		Revision:         tx.Revision,
-		Ready:            tx.Ready,
-		Expired:          tx.Expired,
-		State:            tx.State,
-		Messages:         append([]MessageOperation(nil), tx.Messages...),
-		Offsets:          append([]OffsetOperation(nil), tx.Offsets...),
-		Participants:     append([]Participant(nil), tx.Participants...),
-		Deadline:         tx.Deadline,
-		CreatedAt:        tx.CreatedAt,
-		UpdatedAt:        tx.UpdatedAt,
+		ID:                  tx.ID,
+		Mode:                tx.Mode,
+		Producer:            tx.Producer,
+		Epoch:               tx.Epoch,
+		CoordinatorEpoch:    tx.CoordinatorEpoch,
+		Revision:            tx.Revision,
+		Ready:               tx.Ready,
+		Expired:             tx.Expired,
+		OffsetsMaterialized: tx.OffsetsMaterialized,
+		State:               tx.State,
+		Messages:            append([]MessageOperation(nil), tx.Messages...),
+		Offsets:             append([]OffsetOperation(nil), tx.Offsets...),
+		Participants:        append([]Participant(nil), tx.Participants...),
+		Deadline:            tx.Deadline,
+		CreatedAt:           tx.CreatedAt,
+		UpdatedAt:           tx.UpdatedAt,
 	}
 }
 
 func transactionFromSnapshot(snap *Snapshot) *Transaction {
 	return &Transaction{
-		ID:               snap.ID,
-		Mode:             normalizeMode(snap.Mode),
-		Producer:         snap.Producer,
-		Epoch:            snap.Epoch,
-		CoordinatorEpoch: snap.CoordinatorEpoch,
-		Revision:         snap.Revision,
-		Ready:            snap.Ready,
-		Expired:          snap.Expired,
-		State:            snap.State,
-		Messages:         append([]MessageOperation(nil), snap.Messages...),
-		Offsets:          append([]OffsetOperation(nil), snap.Offsets...),
-		Participants:     append([]Participant(nil), snap.Participants...),
-		Deadline:         snap.Deadline,
-		CreatedAt:        snap.CreatedAt,
-		UpdatedAt:        snap.UpdatedAt,
+		ID:                  snap.ID,
+		Mode:                normalizeMode(snap.Mode),
+		Producer:            snap.Producer,
+		Epoch:               snap.Epoch,
+		CoordinatorEpoch:    snap.CoordinatorEpoch,
+		Revision:            snap.Revision,
+		Ready:               snap.Ready,
+		Expired:             snap.Expired,
+		OffsetsMaterialized: snap.OffsetsMaterialized,
+		State:               snap.State,
+		Messages:            append([]MessageOperation(nil), snap.Messages...),
+		Offsets:             append([]OffsetOperation(nil), snap.Offsets...),
+		Participants:        append([]Participant(nil), snap.Participants...),
+		Deadline:            snap.Deadline,
+		CreatedAt:           snap.CreatedAt,
+		UpdatedAt:           snap.UpdatedAt,
 	}
 }
 

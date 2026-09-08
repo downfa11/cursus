@@ -80,6 +80,31 @@ func TestDistributedRecoveryPreservesLegacyBestEffortReplay(t *testing.T) {
 	require.Equal(t, uint64(9), offset)
 }
 
+func TestDistributedRecoveryUsesLatestVersionedMultiTopicSnapshots(t *testing.T) {
+	recordA := ConsumerMetadataRecord{Version: ConsumerMetadataRecordVersion, Type: ConsumerMetadataRecordOffsetSnapshot, Group: "workers", Topic: "orders", Epoch: 3, Revision: 2, Offsets: []OffsetItem{{Partition: 0, Offset: 8}}, Timestamp: time.Unix(2, 0).UTC()}
+	recordB := ConsumerMetadataRecord{Version: ConsumerMetadataRecordVersion, Type: ConsumerMetadataRecordOffsetSnapshot, Group: "workers", Topic: "payments", Epoch: 3, Revision: 1, Offsets: []OffsetItem{{Partition: 0, Offset: 5}}, Timestamp: time.Unix(3, 0).UTC()}
+	staleA := recordA
+	staleA.Revision = 1
+	staleA.Offsets = []OffsetItem{{Partition: 0, Offset: 4}}
+
+	cfg := config.DefaultConfig()
+	cfg.EnabledDistribution = true
+	handler := &metadataReplayHandler{messages: map[int][]types.Message{
+		0: {encodedMetadataMessage(t, staleA, 0)},
+		1: {encodedMetadataMessage(t, recordB, 0)},
+		2: {encodedMetadataMessage(t, recordA, 0)},
+	}}
+	recovered, err := NewCoordinatorWithRecovery(context.Background(), cfg, handler)
+	require.NoError(t, err)
+	orders, ok := recovered.GetOffset("workers", "orders", 0)
+	require.True(t, ok)
+	require.Equal(t, uint64(8), orders)
+	payments, ok := recovered.GetOffset("workers", "payments", 0)
+	require.True(t, ok)
+	require.Equal(t, uint64(5), payments)
+	require.Equal(t, uint64(3), recovered.GetRegistrationEpoch("workers"))
+}
+
 func TestConsumerMetadataReplayIsDeterministicAcrossPartitions(t *testing.T) {
 	registration := ConsumerMetadataRecord{
 		Version: ConsumerMetadataRecordVersion, Type: ConsumerMetadataRecordRegistration,

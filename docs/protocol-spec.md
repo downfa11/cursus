@@ -592,11 +592,12 @@ Success: `OK transactional_id=<id> mode=<legacy|transactional_processing_v1> sta
 Current guarantee: a successful transaction commit has one durable coordinator decision and follows this order:
 
 1. validate participants and the fenced consumer-group offset scope while the transaction is still `open`,
-2. persist `prepare_commit`,
-3. revalidate current topic, ownership, generation, and monotonic-offset fences,
-4. apply all staged topic offsets under one generation/lifecycle/ownership fence,
-5. append hidden transaction commit markers to all touched output partitions,
-6. persist the final `committed` coordinator decision.
+2. append deterministic transactional offset snapshots to `__consumer_offsets` and register those partitions as transaction participants,
+3. persist `prepare_commit`,
+4. revalidate current topic, ownership, generation, and monotonic-offset fences,
+5. append hidden commit markers to every touched output and offset partition,
+6. persist the final `committed` coordinator decision, which exposes output and offsets together,
+7. materialize committed offsets as ordinary revised snapshots for bounded transaction-state retention.
 
 `read_committed` exposes a transaction only when its partition commit marker and current-epoch coordinator decision agree. Aborted records and control markers are skipped; the earliest unresolved transaction defines the stable visibility boundary. Partitions maintain an in-memory transaction index rebuilt from durable logs. For records created before durable coordinator decisions were stored, or for epochs no longer retained in the current coordinator snapshot, the durable partition marker remains the compatibility authority; every currently tracked epoch requires marker/decision agreement. Coordinator state is restored from the standalone fsynced journal or, in distributed mode, from `TXN_SYNC` and Raft metadata snapshots. A broker that restores a prepared state retries the corresponding commit or abort work; producer sequence state rebuilt from logs prevents duplicates. Retried finalization with the same epoch is idempotent.
 

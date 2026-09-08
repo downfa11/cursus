@@ -15,6 +15,10 @@ func calculateOffsetPartitionCount(groupCount int) int {
 	return min(max(groupCount/10, 4), 50)
 }
 
+func (c *Coordinator) authoritativeOffsetWritesEnabled() bool {
+	return c.standalone || c.offsetRecordWriter != nil
+}
+
 func (c *Coordinator) CommitOffset(groupName, topic string, partition int, offset uint64) error {
 	util.Debug("Committing offset: group='%s', topic='%s', partition=%d, offset=%d", groupName, topic, partition, offset)
 
@@ -52,7 +56,7 @@ func (c *Coordinator) commitOffsetForGroupLocked(gm *GroupMetadata, groupName, t
 	if current, ok := gm.getOffsetSafe(topic, partition); ok && offset < current {
 		return fmt.Errorf("offset regression for group=%s topic=%s partition=%d: current=%d attempted=%d", groupName, topic, partition, current, offset)
 	}
-	if c.standalone {
+	if c.authoritativeOffsetWritesEnabled() {
 		if gm.RegistrationEpoch == 0 {
 			return fmt.Errorf("group %q requires durable registration before offset commit", groupName)
 		}
@@ -71,8 +75,7 @@ func (c *Coordinator) commitOffsetForGroupLocked(gm *GroupMetadata, groupName, t
 		gm.OffsetRevisions[topic] = revision
 		return nil
 	}
-	// Distributed commits are already durable in the Raft log and snapshot.
-	// Do not mirror them into an unbounded local compatibility log.
+	// Legacy FSM replay reaches this path without installing a writer.
 	return gm.storeOffsetMonotonic(groupName, topic, partition, offset)
 }
 
@@ -134,7 +137,7 @@ func (c *Coordinator) commitOffsetsBulkForGroupLocked(gm *GroupMetadata, groupNa
 			return fmt.Errorf("invalid partition %d for group=%s topic=%s partition_count=%d", item.Partition, groupName, topic, partitionCount)
 		}
 	}
-	if c.standalone {
+	if c.authoritativeOffsetWritesEnabled() {
 		if gm.RegistrationEpoch == 0 {
 			return fmt.Errorf("group %q requires durable registration before offset commit", groupName)
 		}
@@ -163,8 +166,7 @@ func (c *Coordinator) commitOffsetsBulkForGroupLocked(gm *GroupMetadata, groupNa
 		gm.OffsetRevisions[topic] = revision
 		return nil
 	}
-	// Raft is authoritative in distributed mode; keep the local compatibility
-	// topic read-only so it cannot grow without bound.
+	// Legacy FSM replay reaches this path without installing a writer.
 	for _, item := range offsets {
 		gm.storeOffset(topic, item.Partition, item.Offset)
 	}
@@ -181,9 +183,8 @@ func memberOwnsTopicPartition(group *GroupMetadata, member *MemberMetadata, topi
 }
 
 // ValidateAndCommitTopicOffsetsBulk validates and applies a multi-topic offset
-// set under one group membership fence. In distributed mode the enclosing Raft
-// entry is the durability boundary; standalone writes all snapshots before
-// exposing any in-memory update.
+// set under one group membership fence. All new writes append complete
+// snapshots to __consumer_offsets before exposing the in-memory update.
 func (c *Coordinator) ValidateAndCommitTopicOffsetsBulk(groupName, memberID string, generation int, offsets map[string][]OffsetItem) error {
 	return c.ValidateAndCommitTopicOffsetsBulkForEpoch(groupName, memberID, generation, 0, offsets)
 }
@@ -222,7 +223,8 @@ func (c *Coordinator) ValidateAndCommitTopicOffsetsBulkForEpoch(groupName, membe
 			}
 		}
 	}
-	if c.standalone {
+	durableWrites := c.authoritativeOffsetWritesEnabled()
+	if durableWrites {
 		if group.RegistrationEpoch == 0 {
 			return fmt.Errorf("group %q requires durable registration before offset commit", groupName)
 		}
@@ -237,9 +239,50 @@ func (c *Coordinator) ValidateAndCommitTopicOffsetsBulkForEpoch(groupName, membe
 		for _, item := range offsets[topic] {
 			group.storeOffset(topic, item.Partition, item.Offset)
 		}
-		if c.standalone {
+		if durableWrites {
 			group.OffsetRevisions[topic]++
 		}
+	}
+	return nil
+}
+
+// MaterializeCommittedTransactionOffsets advances the durable ordinary
+// snapshot after the transaction decision is committed. During this short
+// materialization window GetOffset is covered by TransactionalOffsetResolver.
+func (c *Coordinator) MaterializeCommittedTransactionOffsets(groupName string, registrationEpoch uint64, offsets map[string][]OffsetItem) error {
+	if len(offsets) == 0 {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	group := c.groups[groupName]
+	if group == nil {
+		return fmt.Errorf("group %q not found", groupName)
+	}
+	if group.RegistrationEpoch != registrationEpoch {
+		return fmt.Errorf("ERROR: group_epoch_mismatch group=%s expected=%d actual=%d", groupName, registrationEpoch, group.RegistrationEpoch)
+	}
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	topics := make([]string, 0, len(offsets))
+	for topic := range offsets {
+		topics = append(topics, topic)
+	}
+	sort.Strings(topics)
+	for _, topic := range topics {
+		if err := validateOffsetBatchLocked(group, groupName, topic, offsets[topic]); err != nil {
+			return err
+		}
+		items := mergedOffsetSnapshot(group, topic, offsets[topic])
+		if err := c.writeOffsetSnapshot(groupName, topic, registrationEpoch, group.OffsetRevisions[topic]+1, items); err != nil {
+			return err
+		}
+	}
+	for _, topic := range topics {
+		for _, item := range offsets[topic] {
+			group.storeOffset(topic, item.Partition, item.Offset)
+		}
+		group.OffsetRevisions[topic]++
 	}
 	return nil
 }
@@ -279,6 +322,87 @@ func (c *Coordinator) ApplyOffsetUpdateFromFSM(groupName, topic string, offsets 
 	}
 	for _, item := range offsets {
 		gm.storeOffset(topic, item.Partition, item.Offset)
+	}
+	return nil
+}
+
+func (c *Coordinator) applyVersionedOffsetSnapshotFromLog(groupName, topic string, epoch, revision uint64, offsets []OffsetItem) error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	c.mu.Lock()
+	group := c.groups[groupName]
+	if group == nil || group.RegistrationEpoch < epoch {
+		partitionCount := 0
+		for _, item := range offsets {
+			if item.Partition+1 > partitionCount {
+				partitionCount = item.Partition + 1
+			}
+		}
+		partitions := make([]int, partitionCount)
+		for partition := range partitions {
+			partitions[partition] = partition
+		}
+		group = &GroupMetadata{TopicName: topic, Members: make(map[string]*MemberMetadata), Partitions: partitions, Offsets: make(map[string]map[int]uint64), RegistrationEpoch: epoch, OffsetRevisions: make(map[string]uint64)}
+		c.groups[groupName] = group
+	} else if group.RegistrationEpoch > epoch {
+		c.mu.Unlock()
+		return nil
+	}
+	group.mu.Lock()
+	c.mu.Unlock()
+	defer group.mu.Unlock()
+	if revision <= group.OffsetRevisions[topic] {
+		return nil
+	}
+	if !groupAcceptsTopic(group, topic) {
+		if len(group.Topics) == 0 && group.TopicName != "" {
+			group.Topics = append(group.Topics, group.TopicName)
+		}
+		group.Topics = append(group.Topics, topic)
+		sort.Strings(group.Topics)
+		group.TopicName = subscriptionDisplayName(group.Topics, group.TopicPattern)
+	}
+	for _, item := range offsets {
+		for len(group.Partitions) <= item.Partition {
+			group.Partitions = append(group.Partitions, len(group.Partitions))
+		}
+	}
+	if err := validateOffsetBatchLocked(group, groupName, topic, offsets); err != nil {
+		return err
+	}
+	group.Offsets[topic] = offsetItemsToMap(offsets)
+	group.OffsetRevisions[topic] = revision
+	return nil
+}
+
+// ApplyFencedTopicOffsetUpdateFromFSM is the replay-only compatibility path
+// for historical BATCH_OFFSET records. It never emits a new offset record.
+func (c *Coordinator) ApplyFencedTopicOffsetUpdateFromFSM(groupName, memberID string, generation int, registrationEpoch uint64, offsets map[string][]OffsetItem) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if errResp := c.validateMemberGenerationLocked(groupName, memberID, generation); errResp != "" {
+		return fmt.Errorf("%s", errResp)
+	}
+	group := c.groups[groupName]
+	if registrationEpoch != 0 && group.RegistrationEpoch != registrationEpoch {
+		return fmt.Errorf("ERROR: group_epoch_mismatch group=%s expected=%d actual=%d", groupName, registrationEpoch, group.RegistrationEpoch)
+	}
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	for topic, items := range offsets {
+		if err := validateOffsetBatchLocked(group, groupName, topic, items); err != nil {
+			return err
+		}
+		for _, item := range items {
+			if !memberOwnsTopicPartition(group, group.Members[memberID], topic, item.Partition) {
+				return fmt.Errorf("ERROR: NOT_OWNER topic=%s partition=%d member=%s group=%s generation=%d", topic, item.Partition, memberID, groupName, generation)
+			}
+		}
+	}
+	for topic, items := range offsets {
+		for _, item := range items {
+			group.storeOffset(topic, item.Partition, item.Offset)
+		}
 	}
 	return nil
 }
@@ -432,14 +556,17 @@ func (c *Coordinator) LoadOffsetsFromLog(reader OffsetLogReader) error {
 	return nil
 }
 
-// loadDistributedOffsetsFromLog preserves the cluster coordinator's legacy
-// best-effort replay contract. Standalone recovery is intentionally stricter:
-// it requires complete lifecycle metadata and rejects retained-prefix gaps.
+// loadDistributedOffsetsFromLog restores authoritative versioned snapshots and
+// preserves best-effort replay of legacy payloads. Transactional records are
+// decision-gated by the transaction manager and later ordinary snapshots.
 func (c *Coordinator) loadDistributedOffsetsFromLog(reader OffsetLogReader) (ConsumerMetadataRecoveryStatus, error) {
 	const batchSize = 1024
 	status := ConsumerMetadataRecoveryStatus{Phase: "committed_offset_replay"}
 	var firstParseErr error
 	recovered := make(map[string]map[string]map[int]uint64)
+	versioned := make(map[string]map[string]map[int]uint64)
+	versionedEpochs := make(map[string]uint64)
+	versionedRevisions := make(map[string]map[string]uint64)
 
 	for partition := 0; partition < c.offsetTopicPartitionCount; partition++ {
 		next := uint64(0)
@@ -458,6 +585,47 @@ func (c *Coordinator) loadDistributedOffsetsFromLog(reader OffsetLogReader) (Con
 				candidate := message.Offset + 1
 				if candidate > next {
 					next = candidate
+				}
+				if message.TransactionMarker != types.TransactionMarkerNone {
+					status.ReplayedRecords++
+					continue
+				}
+				record, isVersioned, decodeErr := decodeConsumerMetadataRecord(message.Payload)
+				if isVersioned {
+					if decodeErr != nil || message.Key != consumerMetadataRecordKey(record) {
+						status.CorruptRecords++
+						if firstParseErr == nil {
+							if decodeErr != nil {
+								firstParseErr = fmt.Errorf("invalid versioned consumer offset record: %w", decodeErr)
+							} else {
+								firstParseErr = fmt.Errorf("versioned consumer offset key mismatch")
+							}
+						}
+						continue
+					}
+					status.ReplayedRecords++
+					if record.Type == ConsumerMetadataRecordTransactionalOffsetSnapshot || record.Type != ConsumerMetadataRecordOffsetSnapshot {
+						continue
+					}
+					status.OffsetRecords++
+					if record.Epoch < versionedEpochs[record.Group] {
+						continue
+					}
+					if record.Epoch > versionedEpochs[record.Group] {
+						versioned[record.Group] = make(map[string]map[int]uint64)
+						versionedRevisions[record.Group] = make(map[string]uint64)
+						versionedEpochs[record.Group] = record.Epoch
+					}
+					if record.Revision <= versionedRevisions[record.Group][record.Topic] {
+						continue
+					}
+					partitionOffsets := make(map[int]uint64, len(record.Offsets))
+					for _, item := range record.Offsets {
+						partitionOffsets[item.Partition] = item.Offset
+					}
+					versioned[record.Group][record.Topic] = partitionOffsets
+					versionedRevisions[record.Group][record.Topic] = record.Revision
+					continue
 				}
 				groupName, topicName, offsets, parseErr := parseOffsetLogPayload(message.Payload)
 				if parseErr != nil {
@@ -491,6 +659,9 @@ func (c *Coordinator) loadDistributedOffsetsFromLog(reader OffsetLogReader) (Con
 			}
 		}
 	}
+	for groupName, topics := range versioned {
+		recovered[groupName] = topics
+	}
 
 	if status.CorruptRecords > 0 {
 		util.Warn("Coordinator: skipped %d invalid distributed offset log records; first error: %v", status.CorruptRecords, firstParseErr)
@@ -517,8 +688,14 @@ func (c *Coordinator) loadDistributedOffsetsFromLog(reader OffsetLogReader) (Con
 			for _, partition := range partitions {
 				offsets = append(offsets, OffsetItem{Partition: partition, Offset: partitionOffsets[partition]})
 			}
-			if err := c.ApplyOffsetUpdateFromFSM(groupName, topicName, offsets); err != nil {
-				return status, fmt.Errorf("restore distributed group=%s topic=%s offsets: %w", groupName, topicName, err)
+			var applyErr error
+			if _, ok := versioned[groupName]; ok {
+				applyErr = c.applyVersionedOffsetSnapshotFromLog(groupName, topicName, versionedEpochs[groupName], versionedRevisions[groupName][topicName], offsets)
+			} else {
+				applyErr = c.ApplyOffsetUpdateFromFSM(groupName, topicName, offsets)
+			}
+			if applyErr != nil {
+				return status, fmt.Errorf("restore distributed group=%s topic=%s offsets: %w", groupName, topicName, applyErr)
 			}
 			status.RestoredOffsets += len(offsets)
 		}
@@ -556,8 +733,18 @@ func (c *Coordinator) GetOffset(groupName, topic string, partition int) (uint64,
 	}
 
 	gm.mu.RLock()
-	defer gm.mu.RUnlock()
-	return gm.getOffsetSafe(topic, partition)
+	base, baseOK := gm.getOffsetSafe(topic, partition)
+	epoch := gm.RegistrationEpoch
+	gm.mu.RUnlock()
+	c.mu.RLock()
+	resolver := c.transactionalOffsets
+	c.mu.RUnlock()
+	if resolver != nil {
+		if committed, ok := resolver.CommittedOffset(groupName, topic, partition, epoch); ok && (!baseOK || committed > base) {
+			return committed, true
+		}
+	}
+	return base, baseOK
 }
 
 // updateOffsetPartitionCount updates the number of partitions for the internal offset topic.

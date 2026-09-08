@@ -18,7 +18,7 @@ A successful standalone `REGISTER_GROUP`, `COMMIT_OFFSET`, `BATCH_COMMIT`, or gr
 
 ## Consumer metadata format
 
-`__consumer_offsets` remains a normal partition-log encoding at the disk layer, but its payload and key have a broker-owned versioned contract. New records use JSON version `1`:
+`__consumer_offsets` remains a normal partition-log encoding at the disk layer, but its payload and key have a broker-owned versioned contract. Group lifecycle and ordinary offset records use JSON version `1`; subscription registrations use version `2`, and transactional offset snapshots use version `3`:
 
 ```json
 {

@@ -51,6 +51,29 @@ func TestTransactionalProcessingV1AppendsBeforeDecisionAndCommitsOffsetsBeforeVi
 	offset, ok := coord.GetOffset(groupName, topicName, 0)
 	require.True(t, ok)
 	require.Equal(t, uint64(9), offset)
+	var transactionalOffset, offsetMarker, materialized bool
+	for partition := 0; partition < 4; partition++ {
+		messages, readErr := tm.ReadTopicPartition("__consumer_offsets", partition, 0, 100)
+		require.NoError(t, readErr)
+		for _, message := range messages {
+			if message.TransactionalID == "eos-1" && message.TransactionMarker == types.TransactionMarkerCommit {
+				offsetMarker = true
+			}
+			record, versioned, decodeErr := coordinator.DecodeConsumerMetadataRecord(message.Payload)
+			if decodeErr != nil || !versioned {
+				continue
+			}
+			if record.Type == coordinator.ConsumerMetadataRecordTransactionalOffsetSnapshot && record.TransactionalID == "eos-1" {
+				transactionalOffset = true
+			}
+			if record.Type == coordinator.ConsumerMetadataRecordOffsetSnapshot && record.Group == groupName && record.Topic == topicName {
+				materialized = true
+			}
+		}
+	}
+	require.True(t, transactionalOffset, "transactional offset record must be durable")
+	require.True(t, offsetMarker, "consumer offset partition must receive the transaction marker")
+	require.True(t, materialized, "committed offset must be materialized for long-term recovery")
 }
 
 func TestTransactionalProcessingV1TimeoutAbortsUnresolvedRecords(t *testing.T) {

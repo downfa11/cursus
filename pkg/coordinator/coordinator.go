@@ -29,6 +29,8 @@ type Coordinator struct {
 	groupEpochs               map[string]uint64
 	migrationRecords          []ConsumerMetadataRecord
 	migrationAuthoritative    bool
+	offsetRecordWriter        func(ConsumerMetadataRecord) error
+	transactionalOffsets      TransactionalOffsetResolver
 
 	recoveryMu sync.RWMutex
 	recovery   ConsumerMetadataRecoveryStatus
@@ -64,6 +66,27 @@ type consumerMetadataMigrationProvider interface {
 
 type syncPublisher interface {
 	PublishWithAck(topic string, msg *types.Message) error
+}
+
+// TransactionalOffsetResolver exposes only offsets whose transaction has a
+// final committed decision. The registration epoch prevents an old
+// transaction from leaking into a re-created consumer group.
+type TransactionalOffsetResolver interface {
+	CommittedOffset(group, topic string, partition int, registrationEpoch uint64) (uint64, bool)
+}
+
+// SetOffsetRecordWriter installs the cluster-aware __consumer_offsets writer.
+// Standalone coordinators continue to publish through their TopicHandler.
+func (c *Coordinator) SetOffsetRecordWriter(writer func(ConsumerMetadataRecord) error) {
+	c.mu.Lock()
+	c.offsetRecordWriter = writer
+	c.mu.Unlock()
+}
+
+func (c *Coordinator) SetTransactionalOffsetResolver(resolver TransactionalOffsetResolver) {
+	c.mu.Lock()
+	c.transactionalOffsets = resolver
+	c.mu.Unlock()
 }
 
 // GroupMetadata holds metadata for a single consumer group.

@@ -121,6 +121,12 @@ func NewCommandHandler(
 	if tm != nil {
 		tm.SetTransactionDecisionResolver(ch.TxnManager)
 	}
+	if cd != nil {
+		cd.SetTransactionalOffsetResolver(ch.TxnManager)
+		if ch.isDistributed() {
+			cd.SetOffsetRecordWriter(ch.writeConsumerOffsetRecord)
+		}
+	}
 	if cc != nil && cc.RaftManager != nil {
 		if fsm := cc.RaftManager.GetFSM(); fsm != nil {
 			fsm.SetTransactionManager(ch.TxnManager)

@@ -17,10 +17,12 @@ import (
 const (
 	ConsumerMetadataRecordVersion              = 1
 	ConsumerMetadataRecordVersionSubscriptions = 2
+	ConsumerMetadataRecordVersionTransactions  = 3
 
-	ConsumerMetadataRecordRegistration   = "group_registration"
-	ConsumerMetadataRecordOffsetSnapshot = "offset_snapshot"
-	ConsumerMetadataRecordTombstone      = "group_tombstone"
+	ConsumerMetadataRecordRegistration                = "group_registration"
+	ConsumerMetadataRecordOffsetSnapshot              = "offset_snapshot"
+	ConsumerMetadataRecordTransactionalOffsetSnapshot = "transactional_offset_snapshot"
+	ConsumerMetadataRecordTombstone                   = "group_tombstone"
 )
 
 // TopicOffsetSnapshot is a complete durable next-offset snapshot for one
@@ -37,19 +39,23 @@ type TopicOffsetSnapshot struct {
 // re-created groups, while offset revisions make replay independent of the
 // physical internal-topic partition order.
 type ConsumerMetadataRecord struct {
-	Version         int                   `json:"version"`
-	Type            string                `json:"type"`
-	Group           string                `json:"group"`
-	Topic           string                `json:"topic,omitempty"`
-	PartitionCount  int                   `json:"partition_count,omitempty"`
-	Topics          []string              `json:"topics,omitempty"`
-	TopicPattern    string                `json:"topic_pattern,omitempty"`
-	TopicPartitions []TopicPartition      `json:"topic_partitions,omitempty"`
-	Epoch           uint64                `json:"epoch"`
-	Revision        uint64                `json:"revision,omitempty"`
-	Offsets         []OffsetItem          `json:"offsets,omitempty"`
-	InitialOffsets  []TopicOffsetSnapshot `json:"initial_offsets,omitempty"`
-	Timestamp       time.Time             `json:"timestamp"`
+	Version          int                   `json:"version"`
+	Type             string                `json:"type"`
+	Group            string                `json:"group"`
+	Topic            string                `json:"topic,omitempty"`
+	PartitionCount   int                   `json:"partition_count,omitempty"`
+	Topics           []string              `json:"topics,omitempty"`
+	TopicPattern     string                `json:"topic_pattern,omitempty"`
+	TopicPartitions  []TopicPartition      `json:"topic_partitions,omitempty"`
+	Epoch            uint64                `json:"epoch"`
+	Revision         uint64                `json:"revision,omitempty"`
+	Offsets          []OffsetItem          `json:"offsets,omitempty"`
+	InitialOffsets   []TopicOffsetSnapshot `json:"initial_offsets,omitempty"`
+	Timestamp        time.Time             `json:"timestamp"`
+	TransactionalID  string                `json:"transactional_id,omitempty"`
+	ProducerID       string                `json:"producer_id,omitempty"`
+	ProducerEpoch    int64                 `json:"producer_epoch,omitempty"`
+	CoordinatorEpoch int64                 `json:"coordinator_epoch,omitempty"`
 }
 
 // ConsumerMetadataRecoveryStatus is safe to expose through readiness and
@@ -155,14 +161,20 @@ func canonicalOffsetItems(offsets []OffsetItem) []OffsetItem {
 }
 
 func validateConsumerMetadataRecord(record ConsumerMetadataRecord) error {
-	if record.Version != ConsumerMetadataRecordVersion && record.Version != ConsumerMetadataRecordVersionSubscriptions {
+	if record.Version != ConsumerMetadataRecordVersion && record.Version != ConsumerMetadataRecordVersionSubscriptions && record.Version != ConsumerMetadataRecordVersionTransactions {
 		return fmt.Errorf("unsupported consumer metadata record version %d", record.Version)
 	}
 	if record.Group == "" || record.Epoch == 0 {
 		return fmt.Errorf("consumer metadata record is missing group or epoch")
 	}
+	if record.Version == ConsumerMetadataRecordVersionTransactions && record.Type != ConsumerMetadataRecordTransactionalOffsetSnapshot {
+		return fmt.Errorf("consumer metadata version 3 requires a transactional offset snapshot")
+	}
 	switch record.Type {
 	case ConsumerMetadataRecordRegistration:
+		if hasConsumerMetadataTransactionFields(record) {
+			return fmt.Errorf("group registration contains transaction fields")
+		}
 		if record.Version == ConsumerMetadataRecordVersionSubscriptions {
 			return validateSubscriptionRegistration(record)
 		}
@@ -198,7 +210,26 @@ func validateConsumerMetadataRecord(record ConsumerMetadataRecord) error {
 		if err := validateOffsetItems(record.Offsets, 0); err != nil {
 			return err
 		}
+		if record.TransactionalID != "" || record.ProducerID != "" || record.ProducerEpoch != 0 || record.CoordinatorEpoch != 0 {
+			return fmt.Errorf("ordinary offset snapshot contains transaction fields")
+		}
+	case ConsumerMetadataRecordTransactionalOffsetSnapshot:
+		if record.Version != ConsumerMetadataRecordVersionTransactions || record.Topic == "" || record.Revision == 0 || len(record.Offsets) == 0 {
+			return fmt.Errorf("transactional offset snapshot is missing version, topic, revision, or offsets")
+		}
+		if record.TransactionalID == "" || record.ProducerID == "" || record.CoordinatorEpoch < 0 {
+			return fmt.Errorf("transactional offset snapshot is missing transaction identity")
+		}
+		if record.PartitionCount != 0 || len(record.InitialOffsets) != 0 {
+			return fmt.Errorf("transactional offset snapshot contains registration fields")
+		}
+		if err := validateOffsetItems(record.Offsets, 0); err != nil {
+			return err
+		}
 	case ConsumerMetadataRecordTombstone:
+		if hasConsumerMetadataTransactionFields(record) {
+			return fmt.Errorf("group tombstone contains transaction fields")
+		}
 		if record.PartitionCount != 0 || record.Revision != 0 || len(record.Offsets) != 0 || len(record.InitialOffsets) != 0 {
 			return fmt.Errorf("group tombstone contains live metadata fields")
 		}
@@ -206,6 +237,10 @@ func validateConsumerMetadataRecord(record ConsumerMetadataRecord) error {
 		return fmt.Errorf("unsupported consumer metadata record type %q", record.Type)
 	}
 	return nil
+}
+
+func hasConsumerMetadataTransactionFields(record ConsumerMetadataRecord) bool {
+	return record.TransactionalID != "" || record.ProducerID != "" || record.ProducerEpoch != 0 || record.CoordinatorEpoch != 0
 }
 
 func validateSubscriptionRegistration(record ConsumerMetadataRecord) error {
@@ -266,9 +301,13 @@ func validateOffsetItems(offsets []OffsetItem, partitionCount int) error {
 func consumerMetadataRecordKey(record ConsumerMetadataRecord) string {
 	identity := record.Group
 	prefix := "group"
-	if record.Type == ConsumerMetadataRecordOffsetSnapshot {
+	if record.Type == ConsumerMetadataRecordOffsetSnapshot || record.Type == ConsumerMetadataRecordTransactionalOffsetSnapshot {
 		identity += "\x00" + record.Topic
 		prefix = "offset"
+	}
+	if record.Type == ConsumerMetadataRecordTransactionalOffsetSnapshot {
+		identity += "\x00" + record.TransactionalID + "\x00" + fmt.Sprint(record.ProducerEpoch)
+		prefix = "txn-offset"
 	}
 	digest := sha256.Sum256([]byte(identity))
 	return "cursus.consumer." + prefix + ".v1." + hex.EncodeToString(digest[:])
@@ -322,6 +361,12 @@ func decodeConsumerMetadataRecord(payload string) (ConsumerMetadataRecord, bool,
 // maintenance CLI. The bool is false for a valid legacy offset payload.
 func DecodeConsumerMetadataRecord(payload string) (ConsumerMetadataRecord, bool, error) {
 	return decodeConsumerMetadataRecord(payload)
+}
+
+// EncodeConsumerMetadataRecord is used by the broker's routed internal-topic
+// writer. It preserves the same strict validation as recovery.
+func EncodeConsumerMetadataRecord(record ConsumerMetadataRecord) ([]byte, string, error) {
+	return encodeConsumerMetadataRecord(record)
 }
 
 // DecodeLegacyOffsetPayload decodes the pre-v1 single and bulk offset JSON
@@ -407,7 +452,7 @@ func (c *Coordinator) writeGroupSubscriptionRegistration(groupName string, topic
 }
 
 func (c *Coordinator) writeOffsetSnapshot(groupName, topicName string, epoch, revision uint64, offsets []OffsetItem) error {
-	return c.writeConsumerMetadataRecord(ConsumerMetadataRecord{
+	record := ConsumerMetadataRecord{
 		Version:   ConsumerMetadataRecordVersion,
 		Type:      ConsumerMetadataRecordOffsetSnapshot,
 		Group:     groupName,
@@ -416,7 +461,12 @@ func (c *Coordinator) writeOffsetSnapshot(groupName, topicName string, epoch, re
 		Revision:  revision,
 		Offsets:   canonicalOffsetItems(offsets),
 		Timestamp: time.Now().UTC(),
-	})
+	}
+	writer := c.offsetRecordWriter
+	if writer != nil {
+		return writer(record)
+	}
+	return c.writeConsumerMetadataRecord(record)
 }
 
 func (c *Coordinator) writeGroupTombstone(groupName, topicName string, epoch uint64) error {
@@ -468,6 +518,9 @@ func (c *Coordinator) recoverConsumerMetadata(reader OffsetLogReader) (ConsumerM
 				}
 				previous = message.Offset + 1
 				status.ReplayedRecords++
+				if message.TransactionMarker != types.TransactionMarkerNone {
+					continue
+				}
 
 				record, versioned, decodeErr := decodeConsumerMetadataRecord(message.Payload)
 				if decodeErr != nil {
@@ -510,6 +563,11 @@ func (c *Coordinator) recoverConsumerMetadata(reader OffsetLogReader) (ConsumerM
 						} else {
 							offsetSnapshots[identity] = offsetCandidate{record: record}
 						}
+					case ConsumerMetadataRecordTransactionalOffsetSnapshot:
+						// Visibility is decided by the transaction state store. A
+						// committed transaction is subsequently materialized as an
+						// ordinary snapshot, so startup does not guess a decision.
+						status.OffsetRecords++
 					}
 					continue
 				}
@@ -593,6 +651,8 @@ func (c *Coordinator) recoverConsumerMetadata(reader OffsetLogReader) (ConsumerM
 			} else {
 				offsetSnapshots[identity] = offsetCandidate{record: record}
 			}
+		case ConsumerMetadataRecordTransactionalOffsetSnapshot:
+			status.OffsetRecords++
 		}
 	}
 

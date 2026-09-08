@@ -235,7 +235,7 @@ graph TB
 
 ### Transaction Visibility Boundary
 
-With `transactional_processing_v1`, transactional output follows the normal partition-leader publish and replication path when sent, but remains unresolved and invisible to `read_committed`. Commit durably prepares the decision, atomically advances the same group session's multi-topic input offsets, appends a marker to every output partition, and persists the final decision. Transactional IDs map to a stable set of logical coordinator shards (50 by default) whose count, owners, and fencing epochs are stored in Raft metadata. The count is fixed when the cluster is created; a broker configured with a different count is rejected before joining. A new shard owner retries prepared commit or abort work, while the previous owner is rejected by its stale coordinator epoch. Each owner also resolves timed-out transactions for its shards, so recovery work is distributed across active brokers.
+With `transactional_processing_v1`, transactional output follows the normal partition-leader publish and replication path when sent, but remains unresolved and invisible to `read_committed`. While the transaction is still open, commit appends its staged multi-topic offsets as transactional records in `__consumer_offsets` and registers those internal partitions as participants. It then durably prepares, appends markers to every output and offset partition, and persists the final decision. Output and offsets become visible only from that committed decision; a committed offset is then materialized as an ordinary revised snapshot for long-term recovery. Transactional IDs map to a stable set of logical coordinator shards (50 by default) whose count, owners, and fencing epochs are stored in Raft metadata. The count is fixed when the cluster is created; a broker configured with a different count is rejected before joining. A new shard owner retries prepared commit or abort work, while the previous owner is rejected by its stale coordinator epoch. Each owner also resolves timed-out transactions for its shards, so recovery work is distributed across active brokers.
 
 This is exactly-once processing inside the Cursus broker boundary for one fenced consumer group session. It does not include external database, HTTP, or filesystem side effects.
 
@@ -293,7 +293,7 @@ sequenceDiagram
 
 ### Raft Consensus
 
-In distributed mode, authoritative group and transaction metadata changes are persisted through the Raft FSM and snapshots. A logical group or transaction coordinator may differ from the Raft leader; `applyViaLeader` forwards the metadata mutation through the authenticated broker-internal path before it is considered durable. Standalone consumer offsets use the internal offset log, while standalone transaction snapshots use an append-only fsynced journal under `log_dir`. The final transaction snapshot is persisted before the in-memory decision opens `read_committed` visibility.
+In distributed mode, authoritative group and transaction-coordinator changes are persisted through the Raft FSM and snapshots. Consumer offsets are different: new ordinary and transactional offset writes use the replicated `__consumer_offsets` partition log in both standalone and distributed modes. `OFFSET_SYNC` and `BATCH_OFFSET` remain decodable only to replay older metadata logs. Standalone transaction snapshots use an append-only fsynced journal under `log_dir`. The final transaction snapshot is persisted before its decision opens `read_committed` output and offset visibility.
 
 ```mermaid
 graph LR

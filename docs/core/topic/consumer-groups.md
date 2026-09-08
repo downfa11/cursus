@@ -164,7 +164,7 @@ commit `15`.
 
 Standalone `REGISTER_GROUP` writes a versioned durable registration before returning success, so a group with no commit survives restart with its topic and partition mapping and `FETCH_OFFSET=0`. Offset commits write complete, monotonically revised next-offset snapshots; deletion writes a higher lifecycle tombstone before removing memory state. Startup replays lifecycle records before snapshots, independent of physical internal-partition order.
 
-The internal `__consumer_offsets` topic is compacted but is never subject to application time/size delete retention. Corrupt or inconsistent replay fails readiness rather than presenting a healthy empty coordinator. Earlier single/bulk offset payloads remain readable; pre-manifest storage and `.deleted` offset evidence require the explicit [standalone storage recovery procedure](../../standalone-storage-recovery.md). In distributed mode, offset updates also flow through the Raft FSM and are included in FSM snapshots.
+The internal `__consumer_offsets` topic is compacted but is never subject to application time/size delete retention. It is the authoritative log for new offset writes in standalone and distributed modes. Transactional offset records use the same participant-marker-decision visibility rule as transactional output and are materialized as ordinary snapshots after commit. Corrupt or inconsistent replay fails readiness rather than presenting a healthy empty coordinator. Earlier single/bulk topic payloads and metadata-Raft `OFFSET_SYNC`/`BATCH_OFFSET` entries remain readable for backward-compatible recovery, but new commands do not emit them. Pre-manifest storage and `.deleted` offset evidence require the explicit [standalone storage recovery procedure](../../standalone-storage-recovery.md).
 
 ### Commit and Resume Contract
 
@@ -190,10 +190,8 @@ group/partition, even if the request includes a lower explicit `offset=`.
 
 Commits are monotonic. A commit lower than the current offset is rejected and the
 stored offset is left unchanged. Recommitting the same offset is idempotent.
-Every commit is fenced by the current member, generation, and partition
-assignment. In distributed mode this validation runs again when the replicated
-metadata entry is applied, so a rebalance between request parsing and state
-application cannot commit an offset for a stale owner. A rejected batch applies
+Every commit is fenced by the current member, generation, lifecycle epoch, and partition
+assignment before the acknowledged `__consumer_offsets` append. A rejected batch applies
 none of its offsets. Batch entries are parsed strictly, so malformed entries,
 invalid partitions or offsets, and duplicate partitions also reject the whole
 batch.

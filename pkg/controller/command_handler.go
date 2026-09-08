@@ -839,23 +839,6 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 		return "OK validated=true"
 	}
 
-	if ch.isDistributed() {
-		payload := map[string]interface{}{
-			"type":       "COMMIT",
-			"group":      groupID,
-			"topic":      offsetTopic,
-			"member":     memberID,
-			"generation": generation,
-			"partition":  partition,
-			"offset":     offset,
-		}
-		_, err := ch.applyViaLeader("OFFSET_SYNC", payload)
-		if err != nil {
-			return formatReplicatedGroupError(err, "offset_sync_failed")
-		}
-		return "OK"
-	}
-
 	err = ch.Coordinator.ValidateAndCommit(groupID, offsetTopic, partition, offset, generation, memberID)
 	if err != nil {
 		return formatCoordinatorError(err)
@@ -912,10 +895,8 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 			if !isCoord {
 				return notCoordinatorResponse(coordAddr)
 			}
-			_, err = ch.applyViaLeader("BATCH_OFFSET", map[string]interface{}{"type": "TXN_BATCH_COMMIT", "group": groupID, "member": memberID, "generation": generation, "registration_epoch": registrationEpoch, "offsets_by_topic": offsetsByTopic})
-		} else {
-			err = ch.Coordinator.ValidateAndCommitTopicOffsetsBulkForEpoch(groupID, memberID, generation, registrationEpoch, offsetsByTopic)
 		}
+		err = ch.Coordinator.ValidateAndCommitTopicOffsetsBulkForEpoch(groupID, memberID, generation, registrationEpoch, offsetsByTopic)
 		if err != nil {
 			return formatReplicatedGroupError(err, "raft_batch_apply_failed")
 		}
@@ -982,21 +963,7 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 		return "ERROR: no_valid_offsets"
 	}
 
-	if ch.isDistributed() {
-		batchCommitData := map[string]interface{}{
-			"type":       "BATCH_COMMIT",
-			"group":      groupID,
-			"topic":      offsetTopic,
-			"member":     memberID,
-			"generation": generation,
-			"offsets":    offsetList,
-		}
-		_, err := ch.applyViaLeader("BATCH_OFFSET", batchCommitData)
-		if err != nil {
-			util.Error("Raft batch apply failed: %v", err)
-			return formatReplicatedGroupError(err, "raft_batch_apply_failed")
-		}
-	} else if ch.Coordinator != nil {
+	if ch.Coordinator != nil {
 		err := ch.Coordinator.ValidateAndCommitOffsetsBulk(groupID, offsetTopic, memberID, generation, offsetList)
 		if err != nil {
 			return formatCoordinatorError(err)
